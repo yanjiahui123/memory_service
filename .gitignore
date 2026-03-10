@@ -1,0 +1,42 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# ─── Virtual Environment ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Environment / Secrets ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Uploads ─────────────────────────────────────────────────────────────────
+forum_memory/uploads/
+
+# ─── Dagster ─────────────────────────────────────────────────────────────────
+$DAGSTER_HOME/
+.dagster/
+
+# ─── Editor / System ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
