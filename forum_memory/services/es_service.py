@@ -176,7 +176,7 @@ def hybrid_search(
     status_filter: str = "ACTIVE",
     index_name: str | None = None,
 ) -> list[dict]:
-    """BM25 + knn hybrid search with RRF fusion.
+    """BM25 + knn hybrid search.
 
     Returns [{"memory_id": str, "score": float}, ...]
     """
@@ -191,41 +191,27 @@ def hybrid_search(
         {"term": {"status": status_filter}},
     ]
 
-    search_kwargs = dict(
-        index=name,
-        size=limit,
-        query={
-            "bool": {
-                "must": {"match": {"content": query_text}},
-                "filter": filter_clauses,
-            }
-        },
-        knn={
-            "field": "embedding",
-            "query_vector": query_embedding,
-            "k": limit,
-            "num_candidates": settings.es_knn_num_candidates,
-            "filter": {"bool": {"filter": filter_clauses}},
-        },
-    )
-
-    # Try with RRF first; fall back to plain hybrid if RRF unavailable
     try:
-        resp = es.search(**search_kwargs, rank={"rrf": {"window_size": limit, "rank_constant": 60}})
-        return _parse_hits(resp)
-    except Exception as rrf_err:
-        if "rrf" not in str(rrf_err).lower() and "rank" not in str(rrf_err).lower():
-            # Genuine search error (not RRF-related), no point retrying without RRF
-            logger.exception("ES hybrid search failed")
-            return []
-        logger.info("RRF not available, falling back to plain hybrid search")
-
-    # Fallback: plain BM25 + KNN without RRF fusion
-    try:
-        resp = es.search(**search_kwargs)
+        resp = es.search(
+            index=name,
+            size=limit,
+            query={
+                "bool": {
+                    "must": {"match": {"content": query_text}},
+                    "filter": filter_clauses,
+                }
+            },
+            knn={
+                "field": "embedding",
+                "query_vector": query_embedding,
+                "k": limit,
+                "num_candidates": settings.es_knn_num_candidates,
+                "filter": {"bool": {"filter": filter_clauses}},
+            },
+        )
         return _parse_hits(resp)
     except Exception:
-        logger.exception("ES hybrid search (no RRF) failed")
+        logger.exception("ES hybrid search failed")
         return []
 
 

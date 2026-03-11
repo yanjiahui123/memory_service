@@ -179,7 +179,11 @@ def _execute_pipeline(session: Session, thread: Thread, record: ExtractionRecord
 
 
 def _build_discussion(session: Session, thread_id: UUID) -> str:
-    stmt = select(Comment).where(Comment.thread_id == thread_id).order_by(Comment.created_at)
+    stmt = (
+        select(Comment)
+        .where(Comment.thread_id == thread_id, Comment.deleted_at.is_(None))
+        .order_by(Comment.created_at)
+    )
     comments = list(session.exec(stmt).all())
     parts = []
     for c in comments:
@@ -222,7 +226,12 @@ def _stage_structure(llm, title: str, question: str, discussion: str) -> dict | 
     raw = llm.complete(msgs)
     result = parse_structured_analysis(raw)
     if not result:
-        logger.warning("Stage 1 parse error — raw output: %s", raw[:300])
+        # Retry once on JSON parse failure (same pattern as AUDN retry)
+        logger.info("Stage 1 parse error, retrying once — raw output: %s", raw[:300])
+        raw = llm.complete(msgs)
+        result = parse_structured_analysis(raw)
+        if not result:
+            logger.warning("Stage 1 parse error after retry — raw output: %s", raw[:300])
     return result
 
 
@@ -231,6 +240,11 @@ def _stage_atomize(llm, structured: dict) -> list[dict]:
     msgs = build_atomize_messages(structured)
     raw = llm.complete(msgs)
     atoms = parse_atomized_facts(raw)
+    if not atoms:
+        # Retry once on JSON parse failure
+        logger.info("Stage 2 parse returned empty, retrying once — raw output: %s", raw[:300])
+        raw = llm.complete(msgs)
+        atoms = parse_atomized_facts(raw)
     logger.debug("Stage 2 (Atomize) produced %d atoms", len(atoms))
     return atoms
 
@@ -240,6 +254,11 @@ def _stage_gate(llm, atoms: list[dict]) -> list[dict]:
     msgs = build_gate_messages(atoms)
     raw = llm.complete(msgs)
     facts = parse_gated_facts(raw)
+    if not facts:
+        # Retry once on JSON parse failure
+        logger.info("Stage 3 parse returned empty, retrying once — raw output: %s", raw[:300])
+        raw = llm.complete(msgs)
+        facts = parse_gated_facts(raw)
     logger.debug("Stage 3 (Gate): %d/%d atoms passed", len(facts), len(atoms))
     return facts
 

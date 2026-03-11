@@ -1,6 +1,6 @@
 # Forum Memory Agent 项目审查报告
 
-> **最后更新**: 2026-03-09（第四次全量重审，整合外部功能优化审查报告，验证并修复高优先级问题）
+> **最后更新**: 2026-03-10（第五次更新，修复全部中优先级遗留问题）
 
 ---
 
@@ -99,7 +99,7 @@ quality_score =
 |----|----------|------|
 | 后端框架 | FastAPI (同步路由) | 无 async/await |
 | ORM | SQLModel + PostgreSQL | psycopg2 同步驱动，pool_timeout=10s |
-| 搜索引擎 | Elasticsearch 8.9 | 每板块独立索引，BM25+KNN+RRF，支持中文分词器 |
+| 搜索引擎 | Elasticsearch 8.9 | 每板块独立索引，BM25+KNN 混合搜索，支持中文分词器 |
 | 任务编排 | Dagster (sensor 轮询) | 独立进程运行，6 个 sensor |
 | 后台任务 | ThreadPoolExecutor (4 workers) | 仅 AI 回答生成 |
 | LLM | OpenAI / Custom HTTP | 同步调用，timeout=60s |
@@ -130,7 +130,7 @@ quality_score =
 
 | # | 问题 | 修复方案 | 关键文件 |
 |---|------|---------|---------|
-| 1 | ES 混合搜索 RRF 回退不可达 | 重构异常处理：仅在确认非 RRF 相关错误时返回空，否则 fallback 到无 RRF 搜索 | `es_service.py` |
+| 1 | ES 混合搜索 RRF 回退不可达 | 移除 RRF 功能，直接使用 BM25+KNN 混合搜索 | `es_service.py` |
 | 2 | 多个 API 端点缺少认证 | `resolve_thread`、`timeout_close`、`ai_answer` 添加 `get_current_user` + 权限检查；`create_memory`、`list_memories`、`extract` 添加认证 | `api/threads.py`, `api/memories.py` |
 | 3 | SSE 端点阻塞 worker 120s 无认证 | 添加认证 + namespace 读权限检查；超时从 120s 降至 60s | `api/threads.py` |
 | 4 | LOCKED 记忆 AUDN UPDATE/DELETE 丢数据 | `_apply_update`: LOCKED 时创建新独立条目（pending_human_confirm=True）；`_apply_delete`: LOCKED 时标记原记忆待审而非静默跳过 | `memory_service.py` |
@@ -191,25 +191,29 @@ quality_score =
 
 ---
 
-## 四、当前遗留问题与建议
+## 四、本次遗留问题修复（2026-03-10）
 
-### 4.1 需后续处理（需要 migration 或架构变更）
+### 4.1 后端修复
 
-| # | 问题 | 建议方案 | 优先级 |
-|---|------|---------|--------|
-| 8 | 提取流水线 Structure/Atomize/Gate 阶段无 LLM 重试 | 参照 AUDN 的重试逻辑，对 JSON 解析失败添加 1 次重试 | 中 |
-| 11 | 评论硬删除缺少审计痕迹 | 添加 `Comment.deleted_at` 字段实现软删除（需 Alembic migration） | 中 |
-| 15 | 重排序丢弃 ES RRF 排名分数 | 评估是否将 ES score 作为 rerank 输入信号之一 | 低 |
-| 17 | 质量评分 `wrong` 反馈双重计算 | 评估是否从 `_useful_ratio` 分母中移除 `wrong`，或降低 `_penalty` 权重 | 低 |
+| # | 问题 | 修复方案 | 关键文件 |
+|---|------|---------|---------|
+| 8 | 提取流水线 Structure/Atomize/Gate 阶段无 LLM 重试 | 参照 AUDN 模式，对每个阶段 JSON 解析失败/空结果时自动重试 1 次 | `extraction_service.py` |
+| 11 | 评论硬删除缺少审计痕迹 | 添加 `Comment.deleted_at` 字段实现软删除；`delete_comment` 改为设 `deleted_at` 时间戳；查询/统计自动过滤已删除评论；新增迁移脚本 | `models/thread.py`, `thread_service.py`, `scripts/migrate_comment_soft_delete.py` |
 
-### 4.2 前端遗留
+### 4.2 前端修复
 
-| # | 问题 | 建议方案 | 优先级 |
-|---|------|---------|--------|
-| 23 | 搜索缺少板块上下文（从帖子详情页搜索时 boardId 为 null） | 从 thread 数据中获取 namespace_id 传递给搜索 | 中 |
-| 24 | 搜索结果无错误显示/截断/分页 | 添加 error 状态、内容截断（200 字）、关键词高亮、分页或"加载更多" | 中 |
-| 25 | `useAsync` 不支持请求取消 | 使用 AbortController 在组件卸载时取消进行中的请求 | 低 |
-| 26 | 无全局 401 拦截 | API client 添加响应拦截器，JWT 过期时自动重定向登录页 | 中 |
+| # | 问题 | 修复方案 | 关键文件 |
+|---|------|---------|---------|
+| 23 | 搜索缺少板块上下文 | 使用 sessionStorage 记住最后访问的板块 ID，从 `/threads/:id` 等页面搜索时自动携带板块上下文 | `Layout.tsx` |
+| 24 | 搜索结果体验差 | 添加 error 状态显示、内容截断 200 字（可展开）、关键词高亮、"加载更多"分页 | `SearchResults.tsx` |
+| 25 | `useAsync` 不支持请求取消 | 使用 AbortController：deps 变化或组件卸载时自动 abort 前一个请求，防止状态竞态 | `hooks/useAsync.ts` |
+| 26 | 无全局 401 拦截 | `request`/`requestPaginated` 添加 401 检测，自动清除过期 token 并重定向到首页 | `api/client.ts` |
+
+### 4.3 仍遗留问题（低优先级设计取舍）
+
+| # | 问题 | 说明 | 优先级 |
+|---|------|------|--------|
+| 17 | 质量评分 `wrong` 反馈双重计算 | 已知设计取舍，`wrong` 有效权重约 0.40 | 低 |
 
 ---
 
@@ -219,21 +223,21 @@ quality_score =
 
 | 审查编号 | 分类 | 描述 | 验证结果 | 处理 |
 |----------|------|------|---------|------|
-| 1 | 搜索 | ES RRF 回退代码不可达 | **部分确认**：当 ES 错误信息不含 "rrf" 时回退失败 | ✅ 已修复 |
+| 1 | 搜索 | ES RRF 回退代码不可达 | **部分确认**：当 ES 错误信息不含 "rrf" 时回退失败 | ✅ 已修复（移除 RRF，直接 BM25+KNN） |
 | 2 | 安全 | 多个端点缺少认证 | **确认** | ✅ 已修复 |
 | 3 | 可用性 | SSE 阻塞 worker 120s + 无认证 | **确认** | ✅ 已修复（降至 60s + 添加认证） |
 | 4 | 数据 | LOCKED 记忆 AUDN 处理导致数据丢失 | **确认**：prompt 有保护但 LLM 可能忽略 | ✅ 已修复 |
 | 5 | 一致性 | ES 删除在 DB commit 之前 | **确认** | ✅ 已修复 |
 | 6 | 数据 | 提取失败事件被标记已处理 | **确认** | ✅ 已修复 |
 | 7 | 搜索 | 中文搜索质量低（standard 分析器） | **确认** | ✅ 已修复（ik_max_word 自动检测） |
-| 8 | 可靠性 | 提取流水线 3 阶段无 LLM 重试 | **确认** | ⚪ 遗留（中优先级） |
+| 8 | 可靠性 | 提取流水线 3 阶段无 LLM 重试 | **确认** | ✅ 已修复（JSON 解析失败自动重试 1 次） |
 | 9 | 可靠性 | IN_PROGRESS 提取永久阻塞 | **确认** | ✅ 已修复（30 分钟超时清理） |
 | 10 | 准确性 | cite_count 永远为 0 | **确认** | ✅ 已修复 |
-| 11 | 设计 | 评论硬删除 | **确认** | ⚠️ 部分修复（清除 best_answer_id；完整软删除需 migration） |
+| 11 | 设计 | 评论硬删除 | **确认** | ✅ 已修复（Comment.deleted_at 软删除 + 迁移脚本） |
 | 12 | 搜索 | SQL 回退 AND 逻辑低召回 | **确认** | ✅ 已修复（改为 OR） |
 | 13 | 准确性 | retrieve_count 并发丢失 | **确认** | ✅ 已修复（SQL 表达式） |
 | 14 | 准确性 | Tag 过滤字符串包含误匹配 | **确认** | ✅ 已修复（JSONB @> 操作符） |
-| 15 | 性能 | 重排序丢弃 ES 排名分数 | **确认但非严重**：rerank 是独立排序策略 | ⚪ 遗留（低优先级） |
+| 15 | 性能 | 重排序丢弃 ES 排名分数 | RRF 已移除，不再适用 | ✅ 已解决（移除 RRF） |
 | 16 | 可靠性 | Sensor cursor 无界增长 | **确认** | ✅ 已修复（dispatch 后剪枝） |
 | 17 | 准确性 | wrong 反馈双重计算 | **确认但属设计取舍** | ⚪ 遗留（低优先级） |
 | 18 | 质量 | 压缩 prompt 未保留代码块 | **确认** | ✅ 已修复 |
@@ -241,15 +245,14 @@ quality_score =
 | 20 | 前端 | 回复按钮无防重复提交 | **确认** | ✅ 已修复 |
 | 21 | 前端 | SSE 重连退避失效 | **确认** | ✅ 已修复 |
 | 22 | 前端 | Citation 急切加载 | **确认** | ✅ 已修复（懒加载） |
-| 23 | 前端 | 搜索缺板块上下文 | **确认** | ⚪ 遗留 |
-| 24 | 前端 | 搜索结果体验差 | **确认** | ⚪ 遗留 |
-| 25 | 前端 | useAsync 无请求取消 | **确认** | ⚪ 遗留 |
-| 26 | 前端 | 无全局 401 拦截 | **确认** | ⚪ 遗留 |
+| 23 | 前端 | 搜索缺板块上下文 | **确认** | ✅ 已修复（sessionStorage 记住最后板块） |
+| 24 | 前端 | 搜索结果体验差 | **确认** | ✅ 已修复（错误/截断/高亮/分页） |
+| 25 | 前端 | useAsync 无请求取消 | **确认** | ✅ 已修复（AbortController） |
+| 26 | 前端 | 无全局 401 拦截 | **确认** | ✅ 已修复（自动清 token + 重定向） |
 
 ### 统计
 
 - **外部审查共 26 项**
 - **验证确认 26 项**（100%）
-- **已修复 19 项**（73%）
-- **部分修复 1 项**（4%）
-- **遗留 6 项**（23%，均为中低优先级）
+- **已修复 24 项**（92%）
+- **遗留 2 项**（8%，均为低优先级设计取舍）

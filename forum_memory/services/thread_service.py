@@ -231,7 +231,11 @@ def delete_thread(session: Session, thread_id: UUID, deleted_by_admin: bool = Fa
 
 
 def list_comments(session: Session, thread_id: UUID) -> list[Comment]:
-    stmt = select(Comment).where(Comment.thread_id == thread_id).order_by(Comment.created_at)
+    stmt = (
+        select(Comment)
+        .where(Comment.thread_id == thread_id, Comment.deleted_at.is_(None))
+        .order_by(Comment.created_at)
+    )
     return list(session.exec(stmt).all())
 
 
@@ -291,11 +295,13 @@ def toggle_upvote(session: Session, comment_id: UUID, user_id: UUID) -> tuple[Co
 
 
 def delete_comment(session: Session, comment_id: UUID, user_id: UUID, is_board_admin: bool = False) -> Thread:
-    """Delete a comment. Only comment author or board admin can delete.
+    """Soft-delete a comment. Only comment author or board admin can delete.
     Returns the parent thread."""
     comment = session.get(Comment, comment_id)
     if not comment:
         raise ValueError("Comment not found")
+    if comment.deleted_at:
+        raise ValueError("Comment already deleted")
 
     # Authorization: only comment author or board admin can delete
     if not is_board_admin and comment.author_id != user_id:
@@ -308,8 +314,8 @@ def delete_comment(session: Session, comment_id: UUID, user_id: UUID, is_board_a
     if thread.best_answer_id == comment_id:
         thread.best_answer_id = None
         logger.warning("Deleted comment %s was best_answer for thread %s — cleared reference", comment_id, thread.id)
-    # TODO: Consider adding Comment.deleted_at for soft-delete + audit trail (requires migration)
-    session.delete(comment)
+    # Soft-delete: set deleted_at timestamp for audit trail
+    comment.deleted_at = datetime.now(timezone.utc)
     thread.comment_count = max(0, thread.comment_count - 1)
     session.commit()
     session.refresh(thread)
@@ -438,7 +444,8 @@ def reconcile_comment_counts(session: Session) -> int:
     rows = session.execute(sa_text(
         "SELECT t.id, t.comment_count, COALESCE(c.cnt, 0) AS actual "
         "FROM threads t "
-        "LEFT JOIN (SELECT thread_id, COUNT(*) AS cnt FROM comments GROUP BY thread_id) c "
+        "LEFT JOIN (SELECT thread_id, COUNT(*) AS cnt FROM comments "
+        "           WHERE deleted_at IS NULL GROUP BY thread_id) c "
         "  ON t.id = c.thread_id "
         "WHERE t.status != 'DELETED' AND t.comment_count != COALESCE(c.cnt, 0)"
     )).all()
