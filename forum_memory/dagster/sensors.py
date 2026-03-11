@@ -80,7 +80,7 @@ def thread_resolved_sensor(context: SensorEvaluationContext):
                 run_key=f"extract-{event.id}",
                 run_config={
                     "ops": {
-                        "run_extraction_op": {
+                        "load_thread_op": {
                             "config": {
                                 "thread_id": thread_id,
                                 "event_id": event_id_str,

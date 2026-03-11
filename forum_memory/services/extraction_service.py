@@ -63,7 +63,7 @@ def re_extract(session: Session, thread_id: UUID) -> list[UUID]:
 
 def run_extraction(session: Session, thread_id: UUID) -> list[UUID]:
     """Run full extraction pipeline for a resolved thread. Returns created memory IDs."""
-    if _already_extracted(session, thread_id):
+    if already_extracted(session, thread_id):
         logger.info("Thread %s already extracted, skipping", thread_id)
         return []
 
@@ -72,9 +72,9 @@ def run_extraction(session: Session, thread_id: UUID) -> list[UUID]:
         raise ValueError("Thread not found or not resolved")
 
     # Clean up any previous FAILED record so we can retry
-    _cleanup_failed_record(session, thread_id)
+    cleanup_failed_record(session, thread_id)
 
-    record = _create_record(session, thread)
+    record = create_record(session, thread)
     try:
         memory_ids = _execute_pipeline(session, thread, record)
         record.status = ExtractionStatus.COMPLETED
@@ -85,12 +85,12 @@ def run_extraction(session: Session, thread_id: UUID) -> list[UUID]:
         record.status = ExtractionStatus.FAILED
         record.error_message = str(e)[:500]
         # Rollback any memories created during this failed pipeline run
-        _rollback_partial_memories(session, thread_id, record.created_at)
+        rollback_partial_memories(session, thread_id, record.created_at)
         session.commit()
         raise
 
 
-def _already_extracted(session: Session, thread_id: UUID) -> bool:
+def already_extracted(session: Session, thread_id: UUID) -> bool:
     """Check if extraction has already completed successfully."""
     stmt = select(ExtractionRecord).where(
         ExtractionRecord.thread_id == thread_id,
@@ -99,7 +99,7 @@ def _already_extracted(session: Session, thread_id: UUID) -> bool:
     return session.exec(stmt).first() is not None
 
 
-def _cleanup_failed_record(session: Session, thread_id: UUID) -> None:
+def cleanup_failed_record(session: Session, thread_id: UUID) -> None:
     """Remove FAILED and stale IN_PROGRESS extraction records to allow retry.
 
     IN_PROGRESS records older than 30 minutes are considered stale (process crashed).
@@ -119,7 +119,7 @@ def _cleanup_failed_record(session: Session, thread_id: UUID) -> None:
     session.flush()
 
 
-def _rollback_partial_memories(session: Session, thread_id: UUID, since: datetime) -> None:
+def rollback_partial_memories(session: Session, thread_id: UUID, since: datetime) -> None:
     """Soft-delete memories created during a failed extraction run and remove from ES."""
     from forum_memory.models.memory import Memory
     from forum_memory.services import es_service
@@ -140,7 +140,7 @@ def _rollback_partial_memories(session: Session, thread_id: UUID, since: datetim
         logger.info("Rolled back %d partial memories for thread %s", len(memories), thread_id)
 
 
-def _create_record(session: Session, thread: Thread) -> ExtractionRecord:
+def create_record(session: Session, thread: Thread) -> ExtractionRecord:
     record = ExtractionRecord(
         thread_id=thread.id,
         namespace_id=thread.namespace_id,
@@ -154,9 +154,9 @@ def _create_record(session: Session, thread: Thread) -> ExtractionRecord:
 def _execute_pipeline(session: Session, thread: Thread, record: ExtractionRecord) -> list[UUID]:
     """Compress → extract → AUDN → persist."""
     llm = get_provider()
-    discussion = _build_discussion(session, thread.id)
-    compressed = _maybe_compress(llm, thread.title, thread.content, discussion)
-    facts = _extract_facts(llm, thread.title, thread.content, compressed)
+    discussion = build_discussion(session, thread.id)
+    compressed = maybe_compress(llm, thread.title, thread.content, discussion)
+    facts = extract_facts(llm, thread.title, thread.content, compressed)
 
     authority = default_authority(thread.resolved_type)
     pending = needs_human_confirm(thread.resolved_type)
@@ -166,7 +166,7 @@ def _execute_pipeline(session: Session, thread: Thread, record: ExtractionRecord
     batch_created: list[dict] = []
 
     for fact in facts:
-        mid = _process_one_fact(session, llm, thread, fact, authority, pending, batch_created)
+        mid, _action = process_one_fact(session, llm, thread, fact, authority, pending, batch_created)
         if mid:
             memory_ids.append(mid)
             batch_created.append({
@@ -178,7 +178,7 @@ def _execute_pipeline(session: Session, thread: Thread, record: ExtractionRecord
     return memory_ids
 
 
-def _build_discussion(session: Session, thread_id: UUID) -> str:
+def build_discussion(session: Session, thread_id: UUID) -> str:
     stmt = (
         select(Comment)
         .where(Comment.thread_id == thread_id, Comment.deleted_at.is_(None))
@@ -193,26 +193,26 @@ def _build_discussion(session: Session, thread_id: UUID) -> str:
     return "\n\n".join(parts)
 
 
-def _maybe_compress(llm, title: str, question: str, discussion: str) -> str:
+def maybe_compress(llm, title: str, question: str, discussion: str) -> str:
     if len(discussion) < 3000:
         return discussion
     msgs = build_compress_messages(title, question, discussion)
     return llm.complete(msgs)
 
 
-def _extract_facts(llm, title: str, question: str, discussion: str) -> list[dict]:
+def extract_facts(llm, title: str, question: str, discussion: str) -> list[dict]:
     """Three-stage extraction: Structure → Atomize → Gate."""
-    structured = _stage_structure(llm, title, question, discussion)
+    structured = stage_structure(llm, title, question, discussion)
     if not structured:
         logger.warning("Stage 1 (Structure) returned no result for thread '%s'", title)
         return []
 
-    atoms = _stage_atomize(llm, structured)
+    atoms = stage_atomize(llm, structured)
     if not atoms:
         logger.warning("Stage 2 (Atomize) produced no knowledge points for thread '%s'", title)
         return []
 
-    facts = _stage_gate(llm, atoms)
+    facts = stage_gate(llm, atoms)
     logger.info(
         "Three-stage extraction for '%s': %d atoms → %d passed gate",
         title, len(atoms), len(facts),
@@ -220,7 +220,7 @@ def _extract_facts(llm, title: str, question: str, discussion: str) -> list[dict
     return facts
 
 
-def _stage_structure(llm, title: str, question: str, discussion: str) -> dict | None:
+def stage_structure(llm, title: str, question: str, discussion: str) -> dict | None:
     """Stage 1: Parse discussion into structured intermediate form."""
     msgs = build_structure_messages(title, question, discussion)
     raw = llm.complete(msgs)
@@ -235,7 +235,7 @@ def _stage_structure(llm, title: str, question: str, discussion: str) -> dict | 
     return result
 
 
-def _stage_atomize(llm, structured: dict) -> list[dict]:
+def stage_atomize(llm, structured: dict) -> list[dict]:
     """Stage 2: Extract atomic knowledge points from structured analysis."""
     msgs = build_atomize_messages(structured)
     raw = llm.complete(msgs)
@@ -249,7 +249,7 @@ def _stage_atomize(llm, structured: dict) -> list[dict]:
     return atoms
 
 
-def _stage_gate(llm, atoms: list[dict]) -> list[dict]:
+def stage_gate(llm, atoms: list[dict]) -> list[dict]:
     """Stage 3: Quality gate — filter and convert to standard fact format."""
     msgs = build_gate_messages(atoms)
     raw = llm.complete(msgs)
@@ -263,8 +263,8 @@ def _stage_gate(llm, atoms: list[dict]) -> list[dict]:
     return facts
 
 
-def _process_one_fact(session, llm, thread, fact, authority, pending,
-                      batch_created: list[dict] | None = None) -> UUID | None:
+def process_one_fact(session, llm, thread, fact, authority, pending,
+                      batch_created: list[dict] | None = None) -> tuple[UUID | None, str]:
     similar = find_similar(
         session, thread.namespace_id, fact["content"], top_k=15,
         tags=fact.get("tags"), knowledge_type=fact.get("knowledge_type"),
@@ -293,17 +293,17 @@ def _process_one_fact(session, llm, thread, fact, authority, pending,
         environment=thread.environment,
         source_type="thread",
         source_id=thread.id,
-        source_role=_best_answer_role(session, thread),
+        source_role=best_answer_role(session, thread),
         resolved_type=thread.resolved_type,
         authority=authority.value if authority else None,
         pending_human_confirm=pending,
     )
 
     memory = apply_audn(session, data, result)
-    return memory.id if memory else None
+    return (memory.id if memory else None, result.action.value)
 
 
-def _best_answer_role(session: Session, thread: Thread) -> str:
+def best_answer_role(session: Session, thread: Thread) -> str:
     if not thread.best_answer_id:
         return "unknown"
     comment = session.get(Comment, thread.best_answer_id)
