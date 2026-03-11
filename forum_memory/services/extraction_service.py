@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from forum_memory.models.thread import Thread, Comment
 from forum_memory.models.extraction import ExtractionRecord
-from forum_memory.models.enums import ExtractionStatus, MemoryStatus
+from forum_memory.models.enums import AUDNAction, ExtractionStatus, MemoryStatus
 from forum_memory.core.state_machine import default_authority, needs_human_confirm
 from forum_memory.core.extraction import (
     build_compress_messages,
@@ -19,7 +19,8 @@ from forum_memory.core.extraction import (
     build_atomize_messages, parse_atomized_facts,
     build_gate_messages, parse_gated_facts,
 )
-from forum_memory.core.audn import build_audn_messages, parse_audn_response
+from forum_memory.core.audn import AUDNResult, build_audn_messages, parse_audn_response
+
 from forum_memory.schemas.memory import MemoryCreate
 from forum_memory.services.memory_service import apply_audn
 from forum_memory.services.search_service import find_similar
@@ -173,6 +174,8 @@ def _execute_pipeline(session: Session, thread: Thread, record: ExtractionRecord
                 "id": str(mid),
                 "content": fact["content"],
                 "authority": authority.value if authority else "NORMAL",
+                "tags": fact.get("tags", []),
+                "knowledge_type": fact.get("knowledge_type"),
             })
 
     return memory_ids
@@ -280,10 +283,24 @@ def process_one_fact(session, llm, thread, fact, authority, pending,
     result = parse_audn_response(raw)
 
     # Retry once if LLM returned unparseable output
-    if result.action.value == "NONE" and "parse_error" in result.reason:
+    if "parse_error" in result.reason:
         logger.info("AUDN parse failed for thread %s, retrying once...", thread.id)
         raw = llm.complete(msgs)
         result = parse_audn_response(raw)
+        # If still a parse error after retry, flag for human review
+        if "parse_error" in result.reason:
+            pending = True
+            logger.warning("AUDN parse failed twice for thread %s — will ADD with human review", thread.id)
+
+    # M5: Validate target_id is in the candidate list
+    if result.target_id and result.action in (AUDNAction.UPDATE, AUDNAction.DELETE):
+        valid_ids = {m["id"] for m in similar}
+        if result.target_id not in valid_ids:
+            logger.warning(
+                "AUDN target_id %s not in candidate list (%d candidates), falling back to ADD",
+                result.target_id, len(valid_ids),
+            )
+            result = AUDNResult(action=AUDNAction.ADD, reason="target_id_not_in_candidates")
 
     data = MemoryCreate(
         namespace_id=thread.namespace_id,

@@ -40,7 +40,7 @@ def parse_audn_response(raw: str) -> AUDNResult:
         data = json.loads(text)
     except json.JSONDecodeError:
         logger.error("Failed to parse AUDN output: %s", text[:200])
-        return AUDNResult(action=AUDNAction.NONE, reason="parse_error_fallback_to_none")
+        return AUDNResult(action=AUDNAction.ADD, reason="parse_error_fallback_to_add")
     return _data_to_result(data)
 
 

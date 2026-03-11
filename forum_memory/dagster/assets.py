@@ -272,6 +272,8 @@ def audn_dedup_op(context: OpExecutionContext, thread_data: dict) -> dict:
                         "id": str(mid),
                         "content": fact["content"],
                         "authority": thread_data["authority"],
+                        "tags": fact.get("tags", []),
+                        "knowledge_type": fact.get("knowledge_type"),
                     })
         except Exception:
             logger.exception(
