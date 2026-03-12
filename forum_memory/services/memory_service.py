@@ -13,7 +13,7 @@ from forum_memory.models.operation_log import OperationLog
 from forum_memory.models.enums import Authority, MemoryStatus, OperationType, AUDNAction
 from forum_memory.core.quality import compute_quality_score
 from forum_memory.core.audn import AUDNResult
-from forum_memory.schemas.memory import MemoryCreate, MemoryUpdate
+from forum_memory.schemas.memory import MemoryCreate, MemoryUpdate, MemoryFilter
 from forum_memory.services import es_service
 
 logger = logging.getLogger(__name__)
@@ -70,25 +70,18 @@ def _index_to_es(memory: Memory, index_name: str | None = None, max_retries: int
 
 def list_memories(
     session: Session,
-    namespace_id: UUID | None = None,
-    authority: str | None = None,
-    status: str | None = None,
-    pending_confirm: bool | None = None,
-    knowledge_type: str | None = None,
-    tags: str | None = None,
-    q: str | None = None,
+    filters: MemoryFilter,
     page: int = 1,
     size: int = 20,
-    source_id: UUID | None = None,
 ) -> list[Memory]:
     stmt = (
         select(Memory)
         .join(Namespace, Memory.namespace_id == Namespace.id)
-        .where(Namespace.is_active == True)
+        .where(Namespace.is_active.is_(True))
         .where(Memory.status != MemoryStatus.DELETED)
         .order_by(Memory.updated_at.desc())
     )
-    stmt = _apply_filters(stmt, namespace_id, authority, status, pending_confirm, knowledge_type, tags, q, source_id=source_id)
+    stmt = _apply_filters(stmt, filters)
     stmt = stmt.offset((page - 1) * size).limit(size)
     return list(session.exec(stmt).all())
 
@@ -401,8 +394,81 @@ def transition_archived_memories(session: Session, archive_days: int = 365) -> i
     return len(memories)
 
 
+def _recalc_scores(memories: list[Memory], wrong_threshold: int) -> list[Memory]:
+    """Recalculate quality scores and flag wrong-count alerts. Returns changed memories."""
+    changed = []
+    for m in memories:
+        old_score = m.quality_score
+        new_score = compute_quality_score(
+            useful=m.useful_count,
+            not_useful=m.not_useful_count,
+            wrong=m.wrong_count,
+            outdated=m.outdated_count,
+            source_role=m.source_role,
+            retrieve_count=m.retrieve_count,
+            created_at=m.created_at,
+            cite_count=m.cite_count,
+            resolved_citation_count=m.resolved_citation_count,
+        )
+        if m.wrong_count >= wrong_threshold and not m.pending_human_confirm:
+            m.pending_human_confirm = True
+        if abs(new_score - old_score) > 0.001:
+            m.quality_score = new_score
+            m.indexed_at = None
+            changed.append(m)
+    return changed
+
+
+def _build_ns_index_cache(session: Session, changed: list[Memory]) -> dict:
+    """Pre-fetch namespace_id → es_index_name mapping to avoid N+1."""
+    unique_ns_ids = list({m.namespace_id for m in changed})
+    ns_rows = list(session.exec(
+        select(Namespace.id, Namespace.es_index_name).where(Namespace.id.in_(unique_ns_ids))
+    ).all())
+    return {row[0]: row[1] for row in ns_rows}
+
+
+def _reindex_changed_memories(session: Session, changed: list[Memory], embeddings: list) -> None:
+    """Group changed memories by index and bulk-reindex to ES."""
+    now = datetime.now(timezone.utc)
+    ns_cache = _build_ns_index_cache(session, changed)
+    by_index: dict = {}
+    for m, emb in zip(changed, embeddings):
+        idx = ns_cache.get(m.namespace_id)
+        by_index.setdefault(idx, []).append((m, emb))
+
+    for index_name, pairs in by_index.items():
+        if index_name is None:
+            logger.warning("Skipping %d memories with no ES index (namespace deleted?)", len(pairs))
+            continue
+        docs = [
+            {
+                "memory_id": str(m.id), "namespace_id": str(m.namespace_id),
+                "content": m.content, "embedding": emb, "status": m.status,
+                "environment": m.environment or "", "tags": m.tags or [],
+                "knowledge_type": m.knowledge_type or "", "quality_score": m.quality_score,
+            }
+            for m, emb in pairs
+        ]
+        ok, failed_ids = es_service.bulk_reindex(docs, index_name=index_name)
+        for m, _ in pairs:
+            if str(m.id) not in failed_ids:
+                m.indexed_at = now
+        if failed_ids:
+            logger.warning(
+                "Partial bulk reindex (%d/%d) for index %s; failed IDs deferred to repair sensor",
+                ok, len(docs), index_name,
+            )
+
+    if any(m.indexed_at is not None for m in changed):
+        session.commit()
+
+
 def bulk_refresh_quality(session: Session, batch_size: int = 200) -> int:
     """Refresh quality score for all ACTIVE memories in batches. Returns count updated."""
+    from forum_memory.config import get_settings
+    wrong_threshold = getattr(get_settings(), 'wrong_feedback_threshold', 3)
+
     offset = 0
     total_updated = 0
     while True:
@@ -417,102 +483,30 @@ def bulk_refresh_quality(session: Session, batch_size: int = 200) -> int:
         if not memories:
             break
 
-        from forum_memory.config import get_settings
-        wrong_threshold = getattr(get_settings(), 'wrong_feedback_threshold', 3)
-        changed = []
-        for m in memories:
-            old_score = m.quality_score
-            new_score = compute_quality_score(
-                useful=m.useful_count,
-                not_useful=m.not_useful_count,
-                wrong=m.wrong_count,
-                outdated=m.outdated_count,
-                source_role=m.source_role,
-                retrieve_count=m.retrieve_count,
-                created_at=m.created_at,
-                cite_count=m.cite_count,
-                resolved_citation_count=m.resolved_citation_count,
-            )
-            # 自动告警标记
-            if m.wrong_count >= wrong_threshold and not m.pending_human_confirm:
-                m.pending_human_confirm = True
-            if abs(new_score - old_score) > 0.001:
-                m.quality_score = new_score
-                m.indexed_at = None  # Mark ES as stale
-                changed.append(m)
-
+        changed = _recalc_scores(memories, wrong_threshold)
         if changed:
-            session.commit()  # Commit quality score updates
-
-            # Batch embed: one API call for all changed content
-            try:
-                from forum_memory.providers import get_provider
-                provider = get_provider()
-                embeddings = provider.embed_batch([m.content for m in changed])
-            except Exception:
-                logger.exception(
-                    "embed_batch failed during quality refresh at offset %d; "
-                    "ES sync deferred to repair sensor",
-                    offset,
-                )
-                total_updated += len(changed)
-                offset += batch_size
-                continue
-
-            # Group by namespace ES index for bulk reindex
-            # Pre-fetch all namespace_id → es_index_name in a single query to avoid N+1
-            now = datetime.now(timezone.utc)
-            unique_ns_ids = list({m.namespace_id for m in changed})
-            ns_rows = list(session.exec(
-                select(Namespace.id, Namespace.es_index_name).where(Namespace.id.in_(unique_ns_ids))
-            ).all())
-            ns_cache = {row[0]: row[1] for row in ns_rows}
-            by_index: dict = {}  # index_name → [(Memory, embedding)]
-            for m, emb in zip(changed, embeddings):
-                index_name = ns_cache.get(m.namespace_id)
-                by_index.setdefault(index_name, []).append((m, emb))
-
-            for index_name, pairs in by_index.items():
-                if index_name is None:
-                    logger.warning(
-                        "Skipping %d memories with no ES index (namespace deleted?)",
-                        len(pairs),
-                    )
-                    continue
-                docs = [
-                    {
-                        "memory_id": str(m.id),
-                        "namespace_id": str(m.namespace_id),
-                        "content": m.content,
-                        "embedding": emb,
-                        "status": m.status,
-                        "environment": m.environment or "",
-                        "tags": m.tags or [],
-                        "knowledge_type": m.knowledge_type or "",
-                        "quality_score": m.quality_score,
-                    }
-                    for m, emb in pairs
-                ]
-                ok, failed_ids = es_service.bulk_reindex(docs, index_name=index_name)
-                # Mark indexed_at per-item: only for successfully indexed memories
-                for m, _ in pairs:
-                    if str(m.id) not in failed_ids:
-                        m.indexed_at = now
-                if failed_ids:
-                    logger.warning(
-                        "Partial bulk reindex (%d/%d) for index %s; "
-                        "failed IDs will be repaired by es_sync_repair_sensor",
-                        ok, len(docs), index_name,
-                    )
-
-            if any(m.indexed_at is not None for m in changed):
-                session.commit()
-
-            total_updated += len(changed)
+            session.commit()
+            total_updated += _sync_changed_to_es(session, changed, offset)
 
         offset += batch_size
     logger.info("Refreshed quality for %d memories", total_updated)
     return total_updated
+
+
+def _sync_changed_to_es(session: Session, changed: list[Memory], offset: int) -> int:
+    """Embed and reindex changed memories. Returns count of changed memories."""
+    try:
+        from forum_memory.providers import get_provider
+        embeddings = get_provider().embed_batch([m.content for m in changed])
+    except Exception:
+        logger.exception(
+            "embed_batch failed during quality refresh at offset %d; ES sync deferred to repair sensor",
+            offset,
+        )
+        return len(changed)
+
+    _reindex_changed_memories(session, changed, embeddings)
+    return len(changed)
 
 
 def list_all_tags(
@@ -559,14 +553,7 @@ def batch_get_memories(session: Session, ids: list[UUID]) -> list[Memory]:
 
 def count_memories(
     session: Session,
-    namespace_id: UUID | None = None,
-    authority: str | None = None,
-    status: str | None = None,
-    pending_confirm: bool | None = None,
-    knowledge_type: str | None = None,
-    tags: str | None = None,
-    q: str | None = None,
-    source_id: UUID | None = None,
+    filters: MemoryFilter,
 ) -> int:
     """Count memories matching the given filters (for pagination)."""
     from sqlmodel import func
@@ -574,37 +561,35 @@ def count_memories(
         select(func.count())
         .select_from(Memory)
         .join(Namespace, Memory.namespace_id == Namespace.id)
-        .where(Namespace.is_active == True)
+        .where(Namespace.is_active.is_(True))
         .where(Memory.status != MemoryStatus.DELETED)
     )
-    stmt = _apply_filters(stmt, namespace_id, authority, status, pending_confirm, knowledge_type, tags, q, source_id=source_id)
+    stmt = _apply_filters(stmt, filters)
     return session.exec(stmt).one()
 
 
-def _apply_filters(stmt, ns_id, authority, status, pending, knowledge_type=None, tags=None, q=None, source_id=None):
-    if ns_id:
-        stmt = stmt.where(Memory.namespace_id == ns_id)
-    if authority:
-        stmt = stmt.where(Memory.authority == authority)
-    if status:
-        stmt = stmt.where(Memory.status == status)
-    if pending:
-        stmt = stmt.where(Memory.pending_human_confirm == True)
-    if knowledge_type:
-        stmt = stmt.where(Memory.knowledge_type == knowledge_type)
-    if tags:
-        # Filter memories using PostgreSQL JSONB @> operator for exact tag matching
+def _apply_filters(stmt, filters: MemoryFilter):
+    if filters.namespace_id:
+        stmt = stmt.where(Memory.namespace_id == filters.namespace_id)
+    if filters.authority:
+        stmt = stmt.where(Memory.authority == filters.authority)
+    if filters.status:
+        stmt = stmt.where(Memory.status == filters.status)
+    if filters.pending_confirm:
+        stmt = stmt.where(Memory.pending_human_confirm.is_(True))
+    if filters.knowledge_type:
+        stmt = stmt.where(Memory.knowledge_type == filters.knowledge_type)
+    if filters.tags:
         from sqlalchemy import text as sa_text, literal_column
-        for tag in tags.split(","):
+        import json
+        for tag in filters.tags.split(","):
             tag = tag.strip()
             if tag:
-                # Use JSONB @> operator: tags @> '["tag_value"]'::jsonb
-                import json
                 stmt = stmt.where(literal_column("memories.tags").op("@>")(sa_text(f"'{json.dumps([tag])}'::jsonb")))
-    if q:
-        stmt = stmt.where(Memory.content.ilike(f"%{q}%"))
-    if source_id:
-        stmt = stmt.where(Memory.source_id == source_id)
+    if filters.q:
+        stmt = stmt.where(Memory.content.ilike(f"%{filters.q}%"))
+    if filters.source_id:
+        stmt = stmt.where(Memory.source_id == filters.source_id)
     return stmt
 
 

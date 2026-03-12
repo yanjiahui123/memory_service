@@ -107,7 +107,7 @@ def delete_namespace(
     try:
         return namespace_service.delete_namespace(session, ns_id)
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.get("/{ns_id}/stats", response_model=NamespaceStats)

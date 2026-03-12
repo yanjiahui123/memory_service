@@ -80,7 +80,7 @@ def resolve_thread(thread_id: UUID, data: ThreadResolve, session: Session = Depe
     try:
         return thread_service.resolve_thread(session, thread_id, data.best_answer_id)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.post("/{thread_id}/timeout-close", response_model=ThreadRead)
@@ -92,7 +92,7 @@ def timeout_close(thread_id: UUID, session: Session = Depends(get_db), user: Use
     try:
         return thread_service.timeout_close_thread(session, thread_id)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.get("/{thread_id}/comments", response_model=list[CommentRead])
@@ -128,9 +128,9 @@ def ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = 
     try:
         return thread_service.generate_ai_answer(session, thread_id)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except Exception as e:
-        raise HTTPException(500, f"AI answer generation failed: {e}")
+        raise HTTPException(500, f"AI answer generation failed: {e}") from e
 
 
 @router.get("/{thread_id}/ai-answer/stream")
@@ -157,7 +157,7 @@ def stream_ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: 
             with Session(engine) as bg_session:
                 stmt = select(Comment).where(
                     Comment.thread_id == thread_id,
-                    Comment.is_ai == True,  # noqa: E712
+                    Comment.is_ai.is_(True),
                 )
                 if bg_session.exec(stmt).first():
                     yield f"data: {json.dumps({'ready': True})}\n\n"
@@ -198,7 +198,7 @@ def delete_thread(
     try:
         thread_service.delete_thread(session, thread_id, deleted_by_admin=deleted_by_admin)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
 
 @router.post("/{thread_id}/comments/{comment_id}/upvote", response_model=UpvoteResponse)
@@ -209,7 +209,7 @@ def upvote_comment(thread_id: UUID, comment_id: UUID, session: Session = Depends
             id=comment.id, thread_id=comment.thread_id, upvote_count=comment.upvote_count, voted=voted,
         )
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, str(e)) from e
 
 
 @router.delete("/{thread_id}/comments/{comment_id}")
@@ -246,6 +246,6 @@ def delete_comment(
                 logger.exception("re_extract failed for thread %s after comment deletion", thread_id)
         return {"ok": True}
     except PermissionError as e:
-        raise HTTPException(403, str(e))
+        raise HTTPException(403, str(e)) from e
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e

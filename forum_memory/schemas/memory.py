@@ -61,6 +61,18 @@ class MemoryBatchRequest(BaseModel):
     ids: list[UUID]
 
 
+class MemoryFilter(BaseModel):
+    """Bundled filter parameters for list_memories / count_memories."""
+    namespace_id: UUID | None = None
+    authority: str | None = None
+    status: str | None = None
+    pending_confirm: bool | None = None
+    knowledge_type: str | None = None
+    tags: str | None = None
+    q: str | None = None
+    source_id: UUID | None = None
+
+
 class MemorySearchRequest(BaseModel):
     query: str
     namespace_id: UUID

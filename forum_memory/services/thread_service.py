@@ -32,7 +32,7 @@ def list_threads(
         select(Thread)
         .join(Namespace, Thread.namespace_id == Namespace.id)
         .where(Thread.status != ThreadStatus.DELETED)
-        .where(Namespace.is_active == True)
+        .where(Namespace.is_active.is_(True))
         .order_by(Thread.created_at.desc())
     )
     if namespace_id:
@@ -64,7 +64,7 @@ def count_threads(
         .select_from(Thread)
         .join(Namespace, Thread.namespace_id == Namespace.id)
         .where(Thread.status != ThreadStatus.DELETED)
-        .where(Namespace.is_active == True)
+        .where(Namespace.is_active.is_(True))
     )
     if namespace_id:
         stmt = stmt.where(Thread.namespace_id == namespace_id)
@@ -204,7 +204,6 @@ def delete_thread(session: Session, thread_id: UUID, deleted_by_admin: bool = Fa
             )
         else:
             from forum_memory.services import es_service
-            from forum_memory.models.namespace import Namespace
             ns = session.get(Namespace, thread.namespace_id)
             index_name = ns.es_index_name if ns else None
             for m in memories:
@@ -221,7 +220,6 @@ def delete_thread(session: Session, thread_id: UUID, deleted_by_admin: bool = Fa
     # Remove from ES after successful DB commit to avoid DB/ES inconsistency
     if memories and not deleted_by_admin:
         from forum_memory.services import es_service
-        from forum_memory.models.namespace import Namespace
         ns = session.get(Namespace, thread.namespace_id)
         index_name = ns.es_index_name if ns else None
         for m in memories:
@@ -322,11 +320,36 @@ def delete_comment(session: Session, comment_id: UUID, user_id: UUID, is_board_a
     return thread
 
 
+def _search_related_memories(session, question: str, namespace_id: UUID, enabled: bool) -> tuple[str, list[UUID]]:
+    """Search for memories relevant to the question. Returns (text_for_prompt, cited_ids)."""
+    if not enabled:
+        return "(memory search disabled)", []
+    from forum_memory.services.search_service import search_memories
+    search_result = search_memories(session, MemorySearchRequest(
+        query=question, namespace_id=namespace_id, top_k=5,
+    ))
+    if not search_result.hits:
+        return "(no relevant memories found)", []
+    text = "\n\n".join(f"[M-{str(h.memory.id)[:8]}] {h.memory.content}" for h in search_result.hits)
+    return text, [h.memory.id for h in search_result.hits]
+
+
+def _query_rag_context(ns_config: dict, question: str, enabled: bool) -> tuple[str, str | None]:
+    """Query RAG knowledge base. Returns (rag_prompt, rag_chunks_json)."""
+    if not enabled:
+        return "(knowledge base search disabled)", None
+    from forum_memory.services.rag_service import query_rag
+    kb_sn_list = ns_config.get("kb_sn_list", [])
+    if not kb_sn_list:
+        return "(no knowledge base configured)", None
+    rag_prompt_text, rag_chunks_json = query_rag(kb_sn_list, question)
+    if rag_prompt_text:
+        return rag_prompt_text, rag_chunks_json
+    return "(no knowledge base configured)", None
+
+
 def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
     """Search memories, query RAG if configured, and generate an AI answer for a thread."""
-    from forum_memory.services.search_service import search_memories
-    from forum_memory.services.rag_service import query_rag
-    from forum_memory.models.namespace import Namespace
     from forum_memory.providers import get_provider
 
     thread = session.get(Thread, thread_id)
@@ -334,85 +357,46 @@ def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
         raise ValueError("Thread not found")
 
     question = f"{thread.title}\n{thread.content}"
-
-    # Read namespace config for search toggles
     namespace = session.get(Namespace, thread.namespace_id)
     ns_config = (namespace.config or {}) if namespace else {}
-    enable_memory = ns_config.get("enable_memory_search", True)
-    enable_rag = ns_config.get("enable_rag_search", True)
 
-    # Search related memories (if enabled)
-    if enable_memory:
-        search_req = MemorySearchRequest(
-            query=question,
-            namespace_id=thread.namespace_id,
-            top_k=5,
-        )
-        search_result = search_memories(session, search_req)
+    memories_text, cited_ids = _search_related_memories(
+        session, question, thread.namespace_id, ns_config.get("enable_memory_search", True),
+    )
+    rag_context_prompt, stored_rag_context = _query_rag_context(
+        ns_config, question, ns_config.get("enable_rag_search", True),
+    )
 
-        if search_result.hits:
-            memories_text = "\n\n".join(
-                f"[M-{str(h.memory.id)[:8]}] {h.memory.content}"
-                for h in search_result.hits
-            )
-            cited_ids = [h.memory.id for h in search_result.hits]
-        else:
-            memories_text = "(no relevant memories found)"
-            cited_ids = []
-    else:
-        memories_text = "(memory search disabled)"
-        cited_ids = []
-
-    # Query RAG knowledge base (if enabled and configured)
-    rag_context_prompt = "(no knowledge base configured)"
-    stored_rag_context = None  # only stored when KB actually returns content
-    if enable_rag:
-        kb_sn_list = ns_config.get("kb_sn_list", [])
-        if kb_sn_list:
-            rag_prompt_text, rag_chunks_json = query_rag(kb_sn_list, question)
-            if rag_prompt_text:
-                rag_context_prompt = rag_prompt_text
-                stored_rag_context = rag_chunks_json  # JSON list for UI; None if unstructured
-    else:
-        rag_context_prompt = "(knowledge base search disabled)"
-
-    # Generate answer via LLM
-    provider = get_provider()
-    answer = provider.complete([
+    answer = get_provider().complete([
         {"role": "system", "content": AI_ANSWER_SYSTEM},
         {"role": "user", "content": AI_ANSWER_USER.format(
-            question=question,
-            memories=memories_text,
-            rag_context=rag_context_prompt,
+            question=question, memories=memories_text, rag_context=rag_context_prompt,
         )},
     ])
 
-    # Create AI comment
     comment = Comment(
-        thread_id=thread_id,
-        author_id=None,
-        content=answer,
-        is_ai=True,
-        author_role="ai",
+        thread_id=thread_id, author_id=None, content=answer,
+        is_ai=True, author_role="ai",
         cited_memory_ids=[str(mid) for mid in cited_ids],
         rag_context=stored_rag_context,
     )
     session.add(comment)
     _increment_comment_count(session, thread_id)
-
-    # Increment cite_count for all cited memories (used in quality score formula)
-    if cited_ids:
-        from sqlalchemy import update as sa_update
-        from forum_memory.models.memory import Memory
-        session.execute(
-            sa_update(Memory)
-            .where(Memory.id.in_(cited_ids))
-            .values(cite_count=Memory.cite_count + 1)
-        )
-
+    _increment_cite_counts(session, cited_ids)
     session.commit()
     session.refresh(comment)
     return comment
+
+
+def _increment_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
+    """Increment cite_count for cited memories."""
+    if not cited_ids:
+        return
+    from sqlalchemy import update as sa_update
+    from forum_memory.models.memory import Memory
+    session.execute(
+        sa_update(Memory).where(Memory.id.in_(cited_ids)).values(cite_count=Memory.cite_count + 1)
+    )
 
 
 def batch_timeout_threads(session: Session, timeout_days: int = 7) -> int:
@@ -471,28 +455,32 @@ def _increment_comment_count(session: Session, thread_id: UUID) -> None:
         thread.comment_count += 1
 
 
+def _collect_cited_ids(ai_comments) -> set[UUID]:
+    """Extract unique cited memory IDs from AI comments."""
+    cited_ids: set[UUID] = set()
+    for c in ai_comments:
+        if not c.cited_memory_ids:
+            continue
+        for mid in c.cited_memory_ids:
+            try:
+                cited_ids.add(UUID(str(mid)))
+            except (ValueError, AttributeError):
+                pass
+    return cited_ids
+
+
 def _update_resolved_citations(session: Session, thread_id: UUID) -> None:
     """当帖子被解决时，递增所有 AI 回答所引用记忆的 resolved_citation_count，并刷新其质量分。"""
     from sqlalchemy import update as sa_update
     from forum_memory.models.memory import Memory
 
-    # 收集该帖所有 AI 评论的 cited_memory_ids
     ai_comments = session.exec(
-        select(Comment).where(Comment.thread_id == thread_id, Comment.is_ai == True)  # noqa: E712
+        select(Comment).where(Comment.thread_id == thread_id, Comment.is_ai.is_(True))
     ).all()
-    cited_ids: set[UUID] = set()
-    for c in ai_comments:
-        if c.cited_memory_ids:
-            for mid in c.cited_memory_ids:
-                try:
-                    cited_ids.add(UUID(str(mid)))
-                except (ValueError, AttributeError):
-                    pass
-
+    cited_ids = _collect_cited_ids(ai_comments)
     if not cited_ids:
         return
 
-    # 批量递增计数
     session.execute(
         sa_update(Memory)
         .where(Memory.id.in_(cited_ids))
@@ -500,7 +488,6 @@ def _update_resolved_citations(session: Session, thread_id: UUID) -> None:
     )
     session.commit()
 
-    # 逐条刷新质量分（触发自动告警逻辑）
     from forum_memory.services.memory_service import refresh_quality
     for mid in cited_ids:
         try:

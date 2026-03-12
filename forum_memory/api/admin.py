@@ -125,7 +125,7 @@ def import_topics(
         )
     except Exception as e:
         logger.exception("import_topics (path) failed")
-        raise HTTPException(500, f"导入失败: {e}")
+        raise HTTPException(500, f"导入失败: {e}") from e
 
     return ImportTopicsResult(**stats)
 
@@ -137,6 +137,42 @@ class ImportJobResponse(BaseModel):
     status: JobStatus
     total_files: int
     created_at: str
+
+
+def _extract_zip_json(zip_bytes: bytes, tmp_path: Path, filename: str) -> int:
+    """Extract JSON files from a ZIP archive into tmp_path. Returns count extracted."""
+    zip_tmp = tmp_path / "upload.zip"
+    zip_tmp.write_bytes(zip_bytes)
+    count = 0
+    try:
+        with zipfile.ZipFile(zip_tmp) as zf:
+            for member in zf.namelist():
+                if member.lower().endswith(".json") and not member.startswith("__"):
+                    (tmp_path / Path(member).name).write_bytes(zf.read(member))
+                    count += 1
+    except zipfile.BadZipFile:
+        import shutil
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise HTTPException(400, f"文件 {filename} 不是有效的 ZIP 压缩包")
+    finally:
+        zip_tmp.unlink(missing_ok=True)
+    return count
+
+
+def _save_uploaded_files(files: list[UploadFile], tmp_path: Path) -> int:
+    """Save uploaded JSON/ZIP files to tmp_path. Returns JSON file count."""
+    json_count = 0
+    for uf in files:
+        filename = uf.filename or "unknown"
+        content = uf.file.read()
+        if filename.lower().endswith(".zip"):
+            json_count += _extract_zip_json(content, tmp_path, filename)
+        elif filename.lower().endswith(".json"):
+            (tmp_path / Path(filename).name).write_bytes(content)
+            json_count += 1
+        else:
+            logger.warning("Skipping unsupported file type: %s", filename)
+    return json_count
 
 
 @router.post("/import-topics/upload", response_model=ImportJobResponse)
@@ -152,67 +188,28 @@ def import_topics_upload(
     """通过文件上传批量导入历史帖子（超级管理员或板块管理员）。
 
     立即返回 job_id，后台异步执行。通过 GET /admin/import-jobs/{job_id} 查询进度。
-
-    支持上传格式：
-    - 多个 .json 文件（直接选择 JSON）
-    - 单个 .zip 文件（内含若干 .json，解压后导入）
-    - 混合上传（JSON + ZIP 同时上传）
     """
-    # ── Parse & validate namespace_id ────────────────────────────────────────
     try:
         ns_uuid = UUID(namespace_id)
-    except ValueError:
-        raise HTTPException(400, "namespace_id 格式不正确")
+    except ValueError as e:
+        raise HTTPException(400, "namespace_id 格式不正确") from e
 
     ns = session.get(Namespace, ns_uuid)
     if not ns:
         raise HTTPException(404, f"板块 {ns_uuid} 不存在")
-
-    # ── Permission: super_admin 或该板块的 board_admin ────────────────────────
     check_board_permission(ns_uuid, session, user)
-
     if not files:
         raise HTTPException(400, "未上传任何文件")
 
-    # ── Save uploaded files to a persistent temp directory ────────────────────
     # 注意：不使用 with 语句，由后台线程负责清理
     tmp_path = Path(tempfile.mkdtemp(prefix="fm_import_"))
-    json_count = 0
-
-    for uf in files:
-        filename = uf.filename or "unknown"
-        content = uf.file.read()
-
-        if filename.lower().endswith(".zip"):
-            zip_tmp = tmp_path / "upload.zip"
-            zip_tmp.write_bytes(content)
-            try:
-                with zipfile.ZipFile(zip_tmp) as zf:
-                    for member in zf.namelist():
-                        if member.lower().endswith(".json") and not member.startswith("__"):
-                            dest_name = Path(member).name
-                            (tmp_path / dest_name).write_bytes(zf.read(member))
-                            json_count += 1
-            except zipfile.BadZipFile:
-                import shutil
-                shutil.rmtree(tmp_path, ignore_errors=True)
-                raise HTTPException(400, f"文件 {filename} 不是有效的 ZIP 压缩包")
-            finally:
-                zip_tmp.unlink(missing_ok=True)
-
-        elif filename.lower().endswith(".json"):
-            dest = tmp_path / Path(filename).name
-            dest.write_bytes(content)
-            json_count += 1
-        else:
-            logger.warning("Skipping unsupported file type: %s", filename)
+    json_count = _save_uploaded_files(files, tmp_path)
 
     if json_count == 0:
         import shutil
         shutil.rmtree(tmp_path, ignore_errors=True)
         raise HTTPException(400, "未找到任何 JSON 文件（支持直接上传 .json 或包含 .json 的 .zip）")
 
-    # ── Create job & launch background thread ─────────────────────────────────
     job_id = str(uuid.uuid4())
     job = ImportJob(job_id=job_id, total_files=json_count)
     with _import_jobs_lock:
@@ -306,7 +303,7 @@ def list_quality_alerts(
     """
     stmt = (
         select(Memory)
-        .where(Memory.pending_human_confirm == True)  # noqa: E712
+        .where(Memory.pending_human_confirm.is_(True))
         .order_by(Memory.wrong_count.desc(), Memory.updated_at.desc())
     )
     if namespace_id:

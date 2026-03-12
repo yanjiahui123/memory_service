@@ -9,6 +9,7 @@ Cursor management strategy:
 
 import json
 import logging
+import uuid as _uuid
 from datetime import datetime, timezone
 
 from dagster import sensor, RunRequest, SensorEvaluationContext, SkipReason
@@ -24,30 +25,62 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _load_dispatched_ids(cursor: str | None) -> set[str]:
+    """Parse dispatched event IDs from cursor JSON."""
+    if not cursor:
+        return set()
+    try:
+        cursor_data = json.loads(cursor)
+        return set(cursor_data.get("dispatched", []))
+    except (json.JSONDecodeError, AttributeError):
+        return set()
+
+
+def _prune_dispatched(session: Session, dispatched_ids: set[str]) -> set[str]:
+    """Remove IDs for events that are already processed."""
+    if not dispatched_ids:
+        return set()
+    return {str(e.id) for e in session.exec(
+        select(DomainEvent).where(
+            DomainEvent.id.in_([_uuid.UUID(d) for d in dispatched_ids]),
+            DomainEvent.processed.is_(False),
+        )
+    ).all()}
+
+
+def _build_extract_run_request(event) -> RunRequest:
+    """Build a RunRequest for the extraction job."""
+    thread_id = str(event.aggregate_id)
+    event_id_str = str(event.id)
+    logger.info("Triggering extraction for thread %s (event %s)", thread_id, event.id)
+    return RunRequest(
+        run_key=f"extract-{event.id}",
+        run_config={
+            "ops": {
+                "load_thread_op": {
+                    "config": {
+                        "thread_id": thread_id,
+                        "event_id": event_id_str,
+                    }
+                }
+            }
+        },
+    )
+
+
 # ── Event-driven: thread.resolved / thread.timeout_closed → extract memories ─────
 
 @sensor(job_name="extract_memories_job", minimum_interval_seconds=30)
 def thread_resolved_sensor(context: SensorEvaluationContext):
-    """Poll for unprocessed thread.resolved and thread.timeout_closed events and trigger extraction.
-
-    Cursor tracks the set of already-dispatched event IDs to prevent re-dispatching
-    events whose jobs haven't marked them as processed yet (e.g. after a crash).
-    """
-    # Load dispatched event IDs from cursor
-    dispatched_ids: set[str] = set()
-    if context.cursor:
-        try:
-            cursor_data = json.loads(context.cursor)
-            dispatched_ids = set(cursor_data.get("dispatched", []))
-        except (json.JSONDecodeError, AttributeError):
-            dispatched_ids = set()
+    """Poll for unprocessed thread.resolved and thread.timeout_closed events and trigger extraction."""
+    dispatched_ids = _load_dispatched_ids(context.cursor)
 
     with Session(engine) as session:
         stmt = (
             select(DomainEvent)
             .where(
                 DomainEvent.event_type.in_(["thread.resolved", "thread.timeout_closed"]),
-                DomainEvent.processed == False,  # noqa: E712
+                DomainEvent.processed.is_(False),
             )
             .order_by(DomainEvent.created_at)
             .limit(20)
@@ -55,16 +88,9 @@ def thread_resolved_sensor(context: SensorEvaluationContext):
         events = list(session.exec(stmt).all())
 
         if not events:
-            # Prune dispatched set: remove IDs for events that are now processed
-            if dispatched_ids:
-                still_unprocessed = {str(e.id) for e in session.exec(
-                    select(DomainEvent).where(
-                        DomainEvent.id.in_([__import__('uuid').UUID(d) for d in dispatched_ids]),
-                        DomainEvent.processed == False,  # noqa: E712
-                    )
-                ).all()}
-                if still_unprocessed != dispatched_ids:
-                    context.update_cursor(json.dumps({"dispatched": list(still_unprocessed)}))
+            pruned = _prune_dispatched(session, dispatched_ids)
+            if pruned != dispatched_ids:
+                context.update_cursor(json.dumps({"dispatched": list(pruned)}))
             yield SkipReason("No unprocessed thread.resolved / thread.timeout_closed events")
             return
 
@@ -72,34 +98,13 @@ def thread_resolved_sensor(context: SensorEvaluationContext):
         for event in events:
             event_id_str = str(event.id)
             if event_id_str in dispatched_ids:
-                continue  # Already dispatched, skip
-
-            thread_id = str(event.aggregate_id)
-            logger.info("Triggering extraction for thread %s (event %s)", thread_id, event.id)
-            yield RunRequest(
-                run_key=f"extract-{event.id}",
-                run_config={
-                    "ops": {
-                        "load_thread_op": {
-                            "config": {
-                                "thread_id": thread_id,
-                                "event_id": event_id_str,
-                            }
-                        }
-                    }
-                },
-            )
+                continue
+            yield _build_extract_run_request(event)
             dispatched_ids.add(event_id_str)
             new_dispatched = True
 
         if new_dispatched:
-            # Prune dispatched set: remove IDs for events already processed
-            still_unprocessed = {str(e.id) for e in session.exec(
-                select(DomainEvent).where(
-                    DomainEvent.id.in_([__import__('uuid').UUID(d) for d in dispatched_ids]),
-                    DomainEvent.processed == False,  # noqa: E712
-                )
-            ).all()}
+            still_unprocessed = _prune_dispatched(session, dispatched_ids)
             context.update_cursor(json.dumps({"dispatched": list(still_unprocessed)}))
 
 

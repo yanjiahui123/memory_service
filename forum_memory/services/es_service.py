@@ -71,20 +71,20 @@ def ensure_index_by_name(name: str) -> None:
         },
         "mappings": {
             "properties": {
-                "memory_id":      {"type": "keyword"},
-                "namespace_id":   {"type": "keyword"},
-                "content":        {"type": "text", "analyzer": content_analyzer},
-                "embedding":      {
+                "memory_id": {"type": "keyword"},
+                "namespace_id": {"type": "keyword"},
+                "content": {"type": "text", "analyzer": content_analyzer},
+                "embedding": {
                     "type": "dense_vector",
                     "dims": settings_cfg.embedding_dimension,
                     "index": True,
                     "similarity": "cosine",
                 },
-                "status":         {"type": "keyword"},
-                "environment":    {"type": "keyword"},
-                "tags":           {"type": "keyword"},
+                "status": {"type": "keyword"},
+                "environment": {"type": "keyword"},
+                "tags": {"type": "keyword"},
                 "knowledge_type": {"type": "keyword"},
-                "quality_score":  {"type": "float"},
+                "quality_score": {"type": "float"},
             }
         },
     }
@@ -333,12 +333,18 @@ def bulk_reindex(memories: list[dict], batch_size: int = 100, index_name: str | 
     ]
 
     success, errors = bulk(es, actions, chunk_size=batch_size, raise_on_error=False)
-    failed_ids: set[str] = set()
-    if errors:
-        for err in errors:
-            for action_type in ("index", "create", "update"):
-                if action_type in err:
-                    failed_ids.add(err[action_type]["_id"])
-                    break
+    failed_ids = _extract_failed_ids(errors)
+    if failed_ids:
         logger.warning("Bulk reindex had %d errors (failed IDs: %s)", len(errors), failed_ids)
     return success, failed_ids
+
+
+def _extract_failed_ids(errors: list) -> set[str]:
+    """Extract document IDs from bulk operation errors."""
+    failed_ids: set[str] = set()
+    for err in (errors or []):
+        for action_type in ("index", "create", "update"):
+            if action_type in err:
+                failed_ids.add(err[action_type]["_id"])
+                break
+    return failed_ids

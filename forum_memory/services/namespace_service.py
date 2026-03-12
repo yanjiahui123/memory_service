@@ -39,7 +39,7 @@ def generate_namespace_name(display_name: str) -> str:
 
 def list_namespaces(session: Session) -> list[Namespace]:
     """Return all active namespaces."""
-    stmt = select(Namespace).where(Namespace.is_active == True)
+    stmt = select(Namespace).where(Namespace.is_active.is_(True))
     return list(session.exec(stmt).all())
 
 
@@ -134,7 +134,7 @@ def delete_namespace(session: Session, ns_id: UUID) -> Namespace:
     # 3. Mark all pending domain events for this namespace as processed
     event_stmt = select(DomainEvent).where(
         DomainEvent.namespace_id == ns_id,
-        DomainEvent.processed == False,
+        DomainEvent.processed.is_(False),
     )
     events = list(session.exec(event_stmt).all())
     for e in events:
@@ -232,7 +232,7 @@ def get_aggregate_stats(session: Session) -> NamespaceStats:
     pending_count = session.exec(
         select(func.count()).select_from(Memory)
         .where(Memory.status != MemoryStatus.DELETED)
-        .where(Memory.pending_human_confirm == True)
+        .where(Memory.pending_human_confirm.is_(True))
     ).one()
 
     return NamespaceStats(

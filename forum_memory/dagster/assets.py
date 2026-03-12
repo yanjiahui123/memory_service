@@ -32,6 +32,19 @@ class ExtractConfig(Config):
     event_id: str
 
 
+def _mark_event_processed(session: Session, event_id: UUID) -> None:
+    """Mark a domain event as processed."""
+    event = session.get(DomainEvent, event_id)
+    if event:
+        event.processed = True
+        session.commit()
+
+
+def _skip_result(config: ExtractConfig) -> dict:
+    """Build a skip result dict."""
+    return {"skipped": True, "thread_id": config.thread_id, "event_id": config.event_id}
+
+
 @op
 def load_thread_op(context: OpExecutionContext, config: ExtractConfig) -> dict:
     """Load thread data, check idempotency, create extraction record."""
@@ -46,30 +59,17 @@ def load_thread_op(context: OpExecutionContext, config: ExtractConfig) -> dict:
     event_id = UUID(config.event_id)
 
     with Session(engine) as session:
-        # Idempotency check
         if already_extracted(session, thread_id):
             logger.info("Thread %s already extracted, skipping", thread_id)
-            event = session.get(DomainEvent, event_id)
-            if event:
-                event.processed = True
-                session.commit()
-            context.add_output_metadata({
-                "status": "skipped",
-                "reason": "already_extracted",
-            })
-            return {"skipped": True, "thread_id": config.thread_id, "event_id": config.event_id}
+            _mark_event_processed(session, event_id)
+            context.add_output_metadata({"status": "skipped", "reason": "already_extracted"})
+            return _skip_result(config)
 
         thread = session.get(Thread, thread_id)
         if not thread or not thread.resolved_type:
-            event = session.get(DomainEvent, event_id)
-            if event:
-                event.processed = True
-                session.commit()
-            context.add_output_metadata({
-                "status": "skipped",
-                "reason": "thread_not_resolved",
-            })
-            return {"skipped": True, "thread_id": config.thread_id, "event_id": config.event_id}
+            _mark_event_processed(session, event_id)
+            context.add_output_metadata({"status": "skipped", "reason": "thread_not_resolved"})
+            return _skip_result(config)
 
         cleanup_failed_record(session, thread_id)
         record = create_record(session, thread)
@@ -224,23 +224,53 @@ def quality_gate_op(context: OpExecutionContext, thread_data: dict) -> dict:
     return thread_data
 
 
+def _empty_audn_result(thread_data: dict) -> dict:
+    """Build an AUDN result dict for skipped/no-results cases."""
+    return {
+        "thread_id": thread_data["thread_id"],
+        "event_id": thread_data["event_id"],
+        "record_id": thread_data.get("record_id"),
+        "record_created_at": thread_data.get("record_created_at"),
+        "memory_ids": [],
+        "audn_stats": {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0},
+        "skipped": thread_data.get("skipped", False),
+        "no_results": thread_data.get("no_results", False),
+    }
+
+
+def _process_facts(session, llm, thread, facts, authority, pending, thread_data):
+    """Process all facts through AUDN. Returns (memory_ids, audn_stats)."""
+    from forum_memory.services.extraction_service import process_one_fact
+
+    memory_ids: list[str] = []
+    batch_created: list[dict] = []
+    audn_stats = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
+
+    for fact in facts:
+        mid, action = process_one_fact(
+            session, llm, thread, fact, authority, pending, batch_created,
+        )
+        audn_stats[action] = audn_stats.get(action, 0) + 1
+        if mid:
+            memory_ids.append(str(mid))
+            batch_created.append({
+                "id": str(mid),
+                "content": fact["content"],
+                "authority": thread_data["authority"],
+                "tags": fact.get("tags", []),
+                "knowledge_type": fact.get("knowledge_type"),
+            })
+    return memory_ids, audn_stats
+
+
 @op
 def audn_dedup_op(context: OpExecutionContext, thread_data: dict) -> dict:
     """AUDN per-fact: find similar memories, LLM decision, apply (ADD/UPDATE/DELETE/NONE)."""
     if thread_data.get("skipped") or thread_data.get("no_results"):
         context.add_output_metadata({"status": "skipped", "memories_created": 0})
-        return {
-            "thread_id": thread_data["thread_id"],
-            "event_id": thread_data["event_id"],
-            "record_id": thread_data.get("record_id"),
-            "record_created_at": thread_data.get("record_created_at"),
-            "memory_ids": [],
-            "audn_stats": {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0},
-            "skipped": thread_data.get("skipped", False),
-            "no_results": thread_data.get("no_results", False),
-        }
+        return _empty_audn_result(thread_data)
 
-    from forum_memory.services.extraction_service import process_one_fact, rollback_partial_memories
+    from forum_memory.services.extraction_service import rollback_partial_memories
     from forum_memory.models.thread import Thread
     from forum_memory.providers import get_provider
 
@@ -249,11 +279,7 @@ def audn_dedup_op(context: OpExecutionContext, thread_data: dict) -> dict:
     pending = thread_data["pending"]
     facts = thread_data["facts"]
     record_created_at = datetime.fromisoformat(thread_data["record_created_at"])
-
     llm = get_provider()
-    memory_ids: list[str] = []
-    batch_created: list[dict] = []
-    audn_stats = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
 
     with Session(engine) as session:
         thread = session.get(Thread, thread_id)
@@ -261,24 +287,12 @@ def audn_dedup_op(context: OpExecutionContext, thread_data: dict) -> dict:
             raise ValueError(f"Thread {thread_id} not found in AUDN step")
 
         try:
-            for fact in facts:
-                mid, action = process_one_fact(
-                    session, llm, thread, fact, authority, pending, batch_created,
-                )
-                audn_stats[action] = audn_stats.get(action, 0) + 1
-                if mid:
-                    memory_ids.append(str(mid))
-                    batch_created.append({
-                        "id": str(mid),
-                        "content": fact["content"],
-                        "authority": thread_data["authority"],
-                        "tags": fact.get("tags", []),
-                        "knowledge_type": fact.get("knowledge_type"),
-                    })
+            memory_ids, audn_stats = _process_facts(
+                session, llm, thread, facts, authority, pending, thread_data,
+            )
         except Exception:
             logger.exception(
-                "AUDN failed for thread %s — rolling back %d partial memories",
-                thread_id, len(memory_ids),
+                "AUDN failed for thread %s — rolling back partial memories", thread_id,
             )
             rollback_partial_memories(session, thread_id, record_created_at)
             raise

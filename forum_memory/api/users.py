@@ -29,13 +29,13 @@ def get_my_managed_namespaces(
 ):
     """返回当前用户管理的板块列表。超级管理员返回所有板块，板块管理员只返回自己管理的板块。"""
     if user.role == SystemRole.SUPER_ADMIN:
-        stmt = select(Namespace).where(Namespace.is_active == True)
+        stmt = select(Namespace).where(Namespace.is_active.is_(True))
         return list(session.exec(stmt).all())
     stmt = (
         select(Namespace)
         .join(NamespaceModerator, NamespaceModerator.namespace_id == Namespace.id)
         .where(NamespaceModerator.user_id == user.id)
-        .where(Namespace.is_active == True)
+        .where(Namespace.is_active.is_(True))
     )
     return list(session.exec(stmt).all())
 

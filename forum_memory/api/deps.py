@@ -42,7 +42,7 @@ def _resolve_user_from_jwt(authorization: str, session: Session) -> User | None:
     if not employee_id:
         raise HTTPException(401, "Token 格式异常")
 
-    stmt = select(User).where(User.employee_id == employee_id, User.is_active == True)
+    stmt = select(User).where(User.employee_id == employee_id, User.is_active.is_(True))
     user = session.exec(stmt).first()
     if not user:
         raise HTTPException(401, f"Token 对应的工号 {employee_id} 未注册或已停用")
@@ -72,7 +72,7 @@ def get_current_user(
             raise HTTPException(401, "缺少认证信息：请提供 Authorization: Bearer <token> 或 X-Employee-Id 请求头")
         raise HTTPException(401, "缺少 X-Employee-Id 请求头，请设置你的工号")
 
-    stmt = select(User).where(User.employee_id == employee_id, User.is_active == True)
+    stmt = select(User).where(User.employee_id == employee_id, User.is_active.is_(True))
     user = session.exec(stmt).first()
     if not user:
         raise HTTPException(401, f"工号 {employee_id} 未注册，请联系管理员")

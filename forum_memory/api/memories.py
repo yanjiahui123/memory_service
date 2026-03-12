@@ -10,7 +10,7 @@ from forum_memory.api.deps import get_db, get_current_user, check_namespace_read
 from forum_memory.api.rate_limit import limiter
 from forum_memory.models.user import User
 from forum_memory.schemas.memory import (
-    MemoryCreate, MemoryUpdate, MemoryRead,
+    MemoryCreate, MemoryUpdate, MemoryRead, MemoryFilter,
     AuthorityChange, MemorySearchRequest, MemorySearchResponse,
     MemoryBatchRequest,
 )
@@ -35,14 +35,13 @@ def list_memories(
     session: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    items = memory_service.list_memories(
-        session, namespace_id, authority, status, pending_confirm,
-        knowledge_type, tags, q, page, size, source_id=source_id,
+    filters = MemoryFilter(
+        namespace_id=namespace_id, authority=authority, status=status,
+        pending_confirm=pending_confirm, knowledge_type=knowledge_type,
+        tags=tags, q=q, source_id=source_id,
     )
-    total = memory_service.count_memories(
-        session, namespace_id, authority, status, pending_confirm,
-        knowledge_type, tags, q, source_id=source_id,
-    )
+    items = memory_service.list_memories(session, filters, page, size)
+    total = memory_service.count_memories(session, filters)
     response.headers["X-Total-Count"] = str(total)
     return items
 
@@ -142,4 +141,4 @@ def extract(request: Request, thread_id: UUID, session: Session = Depends(get_db
         ids = extraction_service.run_extraction(session, thread_id)
         return {"memory_ids_created": [str(i) for i in ids]}
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
