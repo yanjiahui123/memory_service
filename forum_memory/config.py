@@ -59,6 +59,15 @@ class Settings(BaseSettings):
     jwt_expire_hours: int = 24
     jwt_enabled: bool = False  # Set True to require JWT; False keeps X-Employee-Id fallback
 
+    # SSO Cookie authentication
+    sso_enabled: bool = False  # Set True to enable cookie-based SSO auth
+    sso_verify_url: str = ""  # Cookie verification API endpoint
+    sso_ak: str = ""  # Access key for signing JWT
+    sso_sk: str = ""  # Secret key for signing JWT
+    sso_tenant_id: str = ""
+    sso_callback_url: str = ""  # URL parameter for cookie verification
+    sso_user_scope: str = ""  # User scope parameter
+
     # File uploads
     upload_dir: str = "uploads"
     upload_max_size_mb: int = 5
@@ -99,6 +108,18 @@ class Settings(BaseSettings):
         # JWT validation
         if self.jwt_enabled and not self.jwt_secret_key:
             raise ValueError("FM_JWT_SECRET_KEY is required when jwt_enabled is True")
+
+        # SSO validation
+        if self.sso_enabled:
+            sso_missing = []
+            if not self.sso_verify_url:
+                sso_missing.append("FM_SSO_VERIFY_URL")
+            if not self.sso_ak:
+                sso_missing.append("FM_SSO_AK")
+            if not self.sso_sk:
+                sso_missing.append("FM_SSO_SK")
+            if sso_missing:
+                raise ValueError(f"Required for SSO auth: {', '.join(sso_missing)}")
 
         # Lifecycle day ordering
         if self.cold_inactive_days >= self.archive_inactive_days:

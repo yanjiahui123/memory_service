@@ -1,20 +1,23 @@
 """FastAPI dependencies — sync session, user lookup, and access control.
 
-Authentication strategy:
-- When jwt_enabled=True: Accepts Authorization: Bearer <token> (preferred)
-  and falls back to X-Employee-Id header for backward compatibility.
-- When jwt_enabled=False (default): Only X-Employee-Id header is used.
+Authentication strategy (in priority order):
+1. JWT: Authorization: Bearer <token> (when jwt_enabled=True)
+2. SSO Cookie: hwsso_login + hwssot3 + login_sid + login_uid (when sso_enabled=True)
+3. X-Employee-Id header (backward compatibility fallback)
 """
 
+import logging
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from sqlmodel import Session, select
 
 from forum_memory.database import get_session
 from forum_memory.models.user import User
 from forum_memory.models.namespace_moderator import NamespaceModerator
 from forum_memory.models.enums import SystemRole
+
+logger = logging.getLogger(__name__)
 
 
 def get_db() -> Session:
@@ -49,27 +52,96 @@ def _resolve_user_from_jwt(authorization: str, session: Session) -> User | None:
     return user
 
 
+def _resolve_user_from_cookie(request: Request, session: Session) -> User | None:
+    """Try to resolve user from SSO cookies.
+
+    Reads hwsso_login/hwssot3/login_sid/login_uid cookies, verifies with
+    external SSO API, and auto-provisions the user if not already registered.
+
+    From user_info: uid → employee_id, displayNameCn → display_name, email → email.
+    """
+    from forum_memory.config import get_settings
+    settings = get_settings()
+    if not settings.sso_enabled:
+        return None
+
+    from forum_memory.core.auth import verify_sso_cookie
+    user_info = verify_sso_cookie(dict(request.cookies))
+    if not user_info:
+        return None
+
+    uid = user_info.get("uid", "").lower().strip()
+    display_name = user_info.get("displayNameCn", "").strip()
+    email = user_info.get("email", "").strip()
+
+    if not uid:
+        logger.warning("SSO cookie verified but uid is empty")
+        return None
+
+    # Find existing user by employee_id
+    stmt = select(User).where(User.employee_id == uid)
+    user = session.exec(stmt).first()
+
+    if user:
+        # Update display_name and email if changed
+        changed = False
+        if display_name and user.display_name != display_name:
+            user.display_name = display_name
+            changed = True
+        if email and user.email != email:
+            user.email = email
+            changed = True
+        if not user.is_active:
+            user.is_active = True
+            changed = True
+        if changed:
+            session.commit()
+            session.refresh(user)
+        return user
+
+    # Auto-provision new user from SSO info
+    user = User(
+        employee_id=uid,
+        username=uid,
+        display_name=display_name or uid,
+        email=email or None,
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    logger.info("Auto-provisioned user from SSO: employee_id=%s, display_name=%s", uid, display_name)
+    return user
+
+
 def get_current_user(
+    request: Request,
     x_employee_id: str = Header(default=""),
     authorization: str = Header(default=""),
     session: Session = Depends(get_db),
 ) -> User:
     """
-    认证用户。支持两种方式：
+    认证用户。支持三种方式（按优先级）：
     1. JWT: Authorization: Bearer <token>（jwt_enabled=True 时优先使用）
-    2. 工号: X-Employee-Id 请求头（向后兼容）
+    2. SSO Cookie: hwsso_login 等 cookie（sso_enabled=True 时使用）
+    3. 工号: X-Employee-Id 请求头（向后兼容）
     """
-    # Try JWT first (if enabled)
+    # 1. Try JWT first (if enabled)
     jwt_user = _resolve_user_from_jwt(authorization, session)
     if jwt_user:
         return jwt_user
 
-    # Fall back to X-Employee-Id
+    # 2. Try SSO cookie (if enabled)
+    cookie_user = _resolve_user_from_cookie(request, session)
+    if cookie_user:
+        return cookie_user
+
+    # 3. Fall back to X-Employee-Id
     employee_id = x_employee_id.strip()
     if not employee_id:
         from forum_memory.config import get_settings
-        if get_settings().jwt_enabled:
-            raise HTTPException(401, "缺少认证信息：请提供 Authorization: Bearer <token> 或 X-Employee-Id 请求头")
+        settings = get_settings()
+        if settings.jwt_enabled or settings.sso_enabled:
+            raise HTTPException(401, "缺少认证信息，请登录后重试")
         raise HTTPException(401, "缺少 X-Employee-Id 请求头，请设置你的工号")
 
     stmt = select(User).where(User.employee_id == employee_id, User.is_active.is_(True))
