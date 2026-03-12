@@ -42,19 +42,24 @@ def _ensure_es_indices() -> None:
     try:
         from forum_memory.services.es_service import ensure_index, ensure_index_by_name
         ensure_index()
-        from sqlmodel import Session, select
-        from forum_memory.database import engine as db_engine
-        from forum_memory.models.namespace import Namespace
-        with Session(db_engine) as session:
-            namespaces = session.exec(
-                select(Namespace).where(Namespace.is_active.is_(True))
-            ).all()
-            for ns in namespaces:
-                if ns.es_index_name:
-                    _ensure_single_index(ensure_index_by_name, ns.es_index_name)
+        _ensure_namespace_indices(ensure_index_by_name)
         logger.info("Elasticsearch indices ensured")
     except Exception as e:
         logger.warning("Elasticsearch index creation failed (non-fatal): %s", e)
+
+
+def _ensure_namespace_indices(ensure_fn) -> None:
+    """Ensure ES indices exist for all active namespaces."""
+    from sqlmodel import Session, select
+    from forum_memory.database import engine as db_engine
+    from forum_memory.models.namespace import Namespace
+    with Session(db_engine) as session:
+        namespaces = session.exec(
+            select(Namespace).where(Namespace.is_active.is_(True))
+        ).all()
+    for ns in namespaces:
+        if ns.es_index_name:
+            _ensure_single_index(ensure_fn, ns.es_index_name)
 
 
 def _ensure_single_index(ensure_fn, index_name: str) -> None:

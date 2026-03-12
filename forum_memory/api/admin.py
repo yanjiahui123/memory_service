@@ -139,17 +139,24 @@ class ImportJobResponse(BaseModel):
     created_at: str
 
 
+def _read_json_from_zip(zf: zipfile.ZipFile, tmp_path: Path) -> int:
+    """Extract JSON files from an open ZipFile into tmp_path. Returns count."""
+    count = 0
+    for member in zf.namelist():
+        if not member.lower().endswith(".json") or member.startswith("__"):
+            continue
+        (tmp_path / Path(member).name).write_bytes(zf.read(member))
+        count += 1
+    return count
+
+
 def _extract_zip_json(zip_bytes: bytes, tmp_path: Path, filename: str) -> int:
     """Extract JSON files from a ZIP archive into tmp_path. Returns count extracted."""
     zip_tmp = tmp_path / "upload.zip"
     zip_tmp.write_bytes(zip_bytes)
-    count = 0
     try:
         with zipfile.ZipFile(zip_tmp) as zf:
-            for member in zf.namelist():
-                if member.lower().endswith(".json") and not member.startswith("__"):
-                    (tmp_path / Path(member).name).write_bytes(zf.read(member))
-                    count += 1
+            count = _read_json_from_zip(zf, tmp_path)
     except zipfile.BadZipFile as e:
         import shutil
         shutil.rmtree(tmp_path, ignore_errors=True)
