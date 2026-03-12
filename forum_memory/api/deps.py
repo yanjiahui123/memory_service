@@ -2,8 +2,7 @@
 
 Authentication strategy (in priority order):
 1. JWT: Authorization: Bearer <token> (when jwt_enabled=True)
-2. SSO Cookie: hwsso_login + hwssot3 + login_sid + login_uid (when sso_enabled=True)
-3. X-Employee-Id header (backward compatibility fallback)
+2. SSO Cookie: hwsso_login + hwssot3 + login_sid + login_uid (default)
 """
 
 import logging
@@ -115,40 +114,25 @@ def _resolve_user_from_cookie(request: Request, session: Session) -> User | None
 
 def get_current_user(
     request: Request,
-    x_employee_id: str = Header(default=""),
     authorization: str = Header(default=""),
     session: Session = Depends(get_db),
 ) -> User:
     """
-    认证用户。支持三种方式（按优先级）：
+    认证用户。支持两种方式（按优先级）：
     1. JWT: Authorization: Bearer <token>（jwt_enabled=True 时优先使用）
-    2. SSO Cookie: hwsso_login 等 cookie（sso_enabled=True 时使用）
-    3. 工号: X-Employee-Id 请求头（向后兼容）
+    2. SSO Cookie: hwsso_login 等 cookie（默认认证方式）
     """
     # 1. Try JWT first (if enabled)
     jwt_user = _resolve_user_from_jwt(authorization, session)
     if jwt_user:
         return jwt_user
 
-    # 2. Try SSO cookie (if enabled)
+    # 2. SSO cookie (default)
     cookie_user = _resolve_user_from_cookie(request, session)
     if cookie_user:
         return cookie_user
 
-    # 3. Fall back to X-Employee-Id
-    employee_id = x_employee_id.strip()
-    if not employee_id:
-        from forum_memory.config import get_settings
-        settings = get_settings()
-        if settings.jwt_enabled or settings.sso_enabled:
-            raise HTTPException(401, "缺少认证信息，请登录后重试")
-        raise HTTPException(401, "缺少 X-Employee-Id 请求头，请设置你的工号")
-
-    stmt = select(User).where(User.employee_id == employee_id, User.is_active.is_(True))
-    user = session.exec(stmt).first()
-    if not user:
-        raise HTTPException(401, f"工号 {employee_id} 未注册，请联系管理员")
-    return user
+    raise HTTPException(401, "缺少认证信息，请登录后重试")
 
 
 def get_current_user_id(user: User = Depends(get_current_user)) -> UUID:
