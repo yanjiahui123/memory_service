@@ -150,10 +150,10 @@ def _extract_zip_json(zip_bytes: bytes, tmp_path: Path, filename: str) -> int:
                 if member.lower().endswith(".json") and not member.startswith("__"):
                     (tmp_path / Path(member).name).write_bytes(zf.read(member))
                     count += 1
-    except zipfile.BadZipFile:
+    except zipfile.BadZipFile as e:
         import shutil
         shutil.rmtree(tmp_path, ignore_errors=True)
-        raise HTTPException(400, f"文件 {filename} 不是有效的 ZIP 压缩包")
+        raise HTTPException(400, f"文件 {filename} 不是有效的 ZIP 压缩包") from e
     finally:
         zip_tmp.unlink(missing_ok=True)
     return count

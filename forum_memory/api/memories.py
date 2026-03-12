@@ -22,24 +22,12 @@ router = APIRouter(prefix="/memories", tags=["memories"])
 @router.get("", response_model=list[MemoryRead])
 def list_memories(
     response: Response,
-    namespace_id: UUID | None = None,
-    authority: str | None = None,
-    status: str | None = None,
-    pending_confirm: bool | None = None,
-    knowledge_type: str | None = None,
-    tags: str | None = None,
-    q: str | None = None,
-    source_id: UUID | None = None,
+    filters: MemoryFilter = Depends(),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     session: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    filters = MemoryFilter(
-        namespace_id=namespace_id, authority=authority, status=status,
-        pending_confirm=pending_confirm, knowledge_type=knowledge_type,
-        tags=tags, q=q, source_id=source_id,
-    )
     items = memory_service.list_memories(session, filters, page, size)
     total = memory_service.count_memories(session, filters)
     response.headers["X-Total-Count"] = str(total)

@@ -36,7 +36,7 @@ def login(data: LoginRequest, session: Session = Depends(get_db)):
     if not employee_id:
         raise HTTPException(400, "employee_id is required")
 
-    stmt = select(User).where(User.employee_id == employee_id, User.is_active == True)
+    stmt = select(User).where(User.employee_id == employee_id, User.is_active.is_(True))
     user = session.exec(stmt).first()
     if not user:
         raise HTTPException(401, f"工号 {employee_id} 未注册或已停用")

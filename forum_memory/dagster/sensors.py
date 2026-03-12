@@ -40,12 +40,13 @@ def _prune_dispatched(session: Session, dispatched_ids: set[str]) -> set[str]:
     """Remove IDs for events that are already processed."""
     if not dispatched_ids:
         return set()
-    return {str(e.id) for e in session.exec(
-        select(DomainEvent).where(
-            DomainEvent.id.in_([_uuid.UUID(d) for d in dispatched_ids]),
-            DomainEvent.processed.is_(False),
-        )
-    ).all()}
+    uuid_list = [_uuid.UUID(d) for d in dispatched_ids]
+    stmt = select(DomainEvent).where(
+        DomainEvent.id.in_(uuid_list),
+        DomainEvent.processed.is_(False),
+    )
+    events = session.exec(stmt).all()
+    return {str(e.id) for e in events}
 
 
 def _build_extract_run_request(event) -> RunRequest:
@@ -152,7 +153,7 @@ def es_sync_repair_sensor(context: SensorEvaluationContext):
             select(func.count())
             .select_from(Memory)
             .where(Memory.status == MemoryStatus.ACTIVE)
-            .where(Memory.indexed_at == None)  # noqa: E711
+            .where(Memory.indexed_at.is_(None))
         ).one()
 
     if count == 0:

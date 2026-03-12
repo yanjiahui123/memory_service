@@ -348,7 +348,7 @@ def transition_cold_memories(session: Session, cold_days: int = 180) -> int:
         .where(
             # Use last_retrieved_at if available, otherwise fall back to updated_at
             (Memory.last_retrieved_at < cutoff) | (
-                (Memory.last_retrieved_at == None) & (Memory.updated_at < cutoff)  # noqa: E711
+                Memory.last_retrieved_at.is_(None) & (Memory.updated_at < cutoff)
             )
         )
     )
@@ -607,7 +607,7 @@ def reindex_unsynced_memories(session: Session, batch_size: int = 50) -> int:
     stmt = (
         select(Memory)
         .where(Memory.status == MemoryStatus.ACTIVE)
-        .where(Memory.indexed_at == None)  # noqa: E711
+        .where(Memory.indexed_at.is_(None))
         .order_by(Memory.created_at)  # deterministic order so repeated runs make progress
         .limit(batch_size)
     )
