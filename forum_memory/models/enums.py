@@ -90,6 +90,15 @@ class KnowledgeType(str, Enum):
     FAQ = "faq"
 
 
+# ── Relation type ────────────────────────────────────────────
+
+class RelationType(str, Enum):
+    SUPPLEMENTS = "SUPPLEMENTS"   # A 补充 B
+    CONTRADICTS = "CONTRADICTS"   # A 与 B 矛盾
+    SUPERSEDES = "SUPERSEDES"     # A 取代 B
+    CAUSED_BY = "CAUSED_BY"       # A 的原因是 B
+
+
 # ── Extraction status ────────────────────────────────────────
 
 class ExtractionStatus(str, Enum):

@@ -170,34 +170,88 @@ def change_authority(session: Session, memory_id: UUID, authority: str, reason: 
 
 
 def apply_audn(session: Session, new_fact: MemoryCreate, result: AUDNResult) -> Memory | None:
-    """Apply an AUDN decision to the memory store.
+    """Apply an AUDN decision and create relation edges.
 
     For DELETE: removes the obsolete memory, then creates the new fact (REPLACE semantics).
     Returns the newly created/updated memory, or None for NONE.
     """
     if result.action == AUDNAction.ADD:
-        # Flag for human review if the new fact conflicts with a LOCKED memory
-        if result.conflict_with_locked:
-            new_fact.pending_human_confirm = True
-            logger.warning(
-                "New fact conflicts with LOCKED memory %s — flagging for human review. Reason: %s",
-                result.conflict_with_locked, result.reason,
-            )
-        memory = create_memory(session, new_fact)
-        if result.conflict_with_locked and memory:
-            _add_log(
-                session, memory, OperationType.ADD,
-                reason=f"conflict_with_locked={result.conflict_with_locked}: {result.reason}",
-            )
-            session.commit()
+        memory = _apply_add(session, new_fact, result)
+        _maybe_add_contradiction(session, memory, result)
         return memory
     if result.action == AUDNAction.UPDATE:
-        return _apply_update(session, result, new_fact)
+        return _apply_update_with_relation(session, result, new_fact)
     if result.action == AUDNAction.DELETE:
-        _apply_delete(session, result)
-        # The new fact supersedes the old one — create it after deleting the obsolete memory
-        return create_memory(session, new_fact)
+        return _apply_delete_with_relation(session, result, new_fact)
     return None  # NONE
+
+
+def _apply_add(session: Session, new_fact: MemoryCreate, result: AUDNResult) -> Memory | None:
+    """ADD branch: create memory, flag for review if conflict with LOCKED."""
+    if result.conflict_with_locked:
+        new_fact.pending_human_confirm = True
+        logger.warning(
+            "New fact conflicts with LOCKED memory %s — flagging for human review. Reason: %s",
+            result.conflict_with_locked, result.reason,
+        )
+    memory = create_memory(session, new_fact)
+    if result.conflict_with_locked and memory:
+        _add_log(
+            session, memory, OperationType.ADD,
+            reason=f"conflict_with_locked={result.conflict_with_locked}: {result.reason}",
+        )
+        session.commit()
+    return memory
+
+
+def _maybe_add_contradiction(session: Session, memory: Memory | None, result: AUDNResult) -> None:
+    """Create a CONTRADICTS relation if ADD conflicted with a LOCKED memory."""
+    if not memory or not result.conflict_with_locked:
+        return
+    from forum_memory.services.relation_service import create_relation
+    from forum_memory.models.enums import RelationType
+    try:
+        create_relation(
+            session, memory.id, UUID(result.conflict_with_locked),
+            RelationType.CONTRADICTS, origin="audn",
+        )
+    except Exception:
+        logger.warning("Failed to create CONTRADICTS relation for %s", memory.id, exc_info=True)
+
+
+def _apply_update_with_relation(
+    session: Session, result: AUDNResult, new_fact: MemoryCreate,
+) -> Memory | None:
+    """UPDATE branch: merge content, create SUPPLEMENTS if a new independent memory was created."""
+    memory = _apply_update(session, result, new_fact)
+    if not memory or not result.target_id:
+        return memory
+    # If target was LOCKED, _apply_update creates an independent new memory
+    # (memory.id != target_id) — link them with SUPPLEMENTS.
+    if str(memory.id) != result.target_id:
+        _try_create_relation(session, memory.id, UUID(result.target_id), "SUPPLEMENTS")
+    return memory
+
+
+def _apply_delete_with_relation(
+    session: Session, result: AUDNResult, new_fact: MemoryCreate,
+) -> Memory | None:
+    """DELETE branch: soft-delete old, create new, link with SUPERSEDES."""
+    _apply_delete(session, result)
+    memory = create_memory(session, new_fact)
+    if memory and result.target_id:
+        _try_create_relation(session, memory.id, UUID(result.target_id), "SUPERSEDES")
+    return memory
+
+
+def _try_create_relation(session: Session, source_id: UUID, target_id: UUID, rel_type_str: str) -> None:
+    """Best-effort relation creation — failures are logged but don't block AUDN."""
+    from forum_memory.services.relation_service import create_relation
+    from forum_memory.models.enums import RelationType
+    try:
+        create_relation(session, source_id, target_id, RelationType(rel_type_str), origin="audn")
+    except Exception:
+        logger.warning("Failed to create %s relation %s -> %s", rel_type_str, source_id, target_id, exc_info=True)
 
 
 def refresh_quality(session: Session, memory_id: UUID) -> float:

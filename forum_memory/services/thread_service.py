@@ -330,8 +330,15 @@ def _search_related_memories(session, question: str, namespace_id: UUID, enabled
     ))
     if not search_result.hits:
         return "(no relevant memories found)", []
-    text = "\n\n".join(f"[M-{str(h.memory.id)[:8]}] {h.memory.content}" for h in search_result.hits)
-    return text, [h.memory.id for h in search_result.hits]
+    lines = []
+    cited_ids = []
+    for h in search_result.hits:
+        prefix = f"[M-{str(h.memory.id)[:8]}]"
+        lines.append(f"{prefix} {h.memory.content}")
+        cited_ids.append(h.memory.id)
+        for rel in h.related:
+            lines.append(f"  ↳ [{rel.label}] {rel.content_preview}")
+    return "\n\n".join(lines), cited_ids
 
 
 def _query_rag_context(ns_config: dict, question: str, enabled: bool) -> tuple[str, str | None]:

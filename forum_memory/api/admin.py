@@ -337,6 +337,24 @@ def dismiss_quality_alert(
     return memory
 
 
+# ─── Contradictions ───────────────────────────────────────────────────────────
+
+@router.get("/contradictions")
+def list_contradictions(
+    namespace_id: UUID | None = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    session: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """List all CONTRADICTS memory pairs for admin review."""
+    from forum_memory.services import relation_service
+    from forum_memory.schemas.relation import RelationRead
+
+    items, total = relation_service.list_contradictions(session, namespace_id, page, size)
+    return {"items": [RelationRead.model_validate(r) for r in items], "total": total}
+
+
 # ─── Audit Logs ───────────────────────────────────────────────────────────────
 
 class AuditLogItem(BaseModel):

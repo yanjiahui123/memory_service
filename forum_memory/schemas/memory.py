@@ -80,11 +80,19 @@ class MemorySearchRequest(BaseModel):
     environment: str | None = None
 
 
+class RelatedMemoryHint(BaseModel):
+    relation_type: str
+    label: str
+    memory_id: UUID
+    content_preview: str
+
+
 class MemorySearchHit(BaseModel):
     memory: MemoryRead
     score: float
     env_match: bool = True
     env_warning: str | None = None
+    related: list[RelatedMemoryHint] = []
 
 
 class MemorySearchResponse(BaseModel):

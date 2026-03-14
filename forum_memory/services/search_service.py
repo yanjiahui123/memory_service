@@ -29,6 +29,7 @@ def search_memories(session: Session, req: MemorySearchRequest) -> MemorySearchR
     candidates = _recall(session, req.namespace_id, expanded, req.top_k * 5)
     ranked = _simple_rank(candidates, expanded, req.top_k)
     hits = _build_hits(session, ranked, req.environment)
+    _expand_hit_relations(session, hits)
     return MemorySearchResponse(hits=hits, query_expanded=expanded, total_recalled=len(candidates))
 
 
@@ -268,3 +269,58 @@ def _check_env(mem_env: str | None, req_env: str | None) -> bool:
     if not req_env or not mem_env:
         return True
     return req_env.lower() in mem_env.lower()
+
+
+# ---------------------------------------------------------------------------
+# Relation expansion
+# ---------------------------------------------------------------------------
+
+_RELATION_LABELS = {
+    "SUPPLEMENTS": "相关补充",
+    "CONTRADICTS": "存在争议",
+    "SUPERSEDES": "已被取代",
+    "CAUSED_BY": "因果关联",
+}
+
+
+def _expand_hit_relations(session: Session, hits: list[MemorySearchHit]) -> None:
+    """Enrich top search hits with related memory hints (spreading activation)."""
+    if not hits:
+        return
+    from forum_memory.services.relation_service import expand_relations_for_memories
+    from forum_memory.schemas.memory import RelatedMemoryHint
+
+    top_ids = [h.memory.id for h in hits[:5]]
+    relations_map = expand_relations_for_memories(session, top_ids)
+    if not relations_map:
+        return
+
+    related_ids: set[UUID] = set()
+    for rels in relations_map.values():
+        for rel in rels:
+            related_ids.add(rel.target_memory_id)
+    preview_map = _fetch_memory_previews(session, list(related_ids))
+
+    for hit in hits[:5]:
+        rels = relations_map.get(hit.memory.id, [])
+        for rel in rels[:3]:
+            preview = preview_map.get(rel.target_memory_id)
+            if not preview:
+                continue
+            label = _RELATION_LABELS.get(rel.relation_type.value, rel.relation_type.value)
+            hint = RelatedMemoryHint(
+                relation_type=rel.relation_type.value,
+                label=label,
+                memory_id=rel.target_memory_id,
+                content_preview=preview[:100],
+            )
+            hit.related.append(hint)
+
+
+def _fetch_memory_previews(session: Session, memory_ids: list[UUID]) -> dict[UUID, str]:
+    """Fetch memory content by IDs for relation preview."""
+    if not memory_ids:
+        return {}
+    stmt = select(Memory.id, Memory.content).where(Memory.id.in_(memory_ids))
+    rows = session.exec(stmt).all()
+    return {row[0]: row[1] for row in rows}
