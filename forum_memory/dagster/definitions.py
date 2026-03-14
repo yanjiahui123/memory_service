@@ -10,6 +10,9 @@ receives a push notification via SSE (/threads/{id}/ai-answer/stream).
 
 from dagster import Definitions
 
+# Register all source adapters before sensors run
+import forum_memory.adapters  # noqa: F401
+
 from forum_memory.dagster.assets import (
     extract_memories_job,
     timeout_threads_job,
@@ -19,7 +22,7 @@ from forum_memory.dagster.assets import (
     reconcile_comment_counts_job,
 )
 from forum_memory.dagster.sensors import (
-    thread_resolved_sensor,
+    source_extraction_sensor,
     thread_timeout_sensor,
     memory_lifecycle_sensor,
     quality_refresh_sensor,
@@ -37,7 +40,7 @@ defs = Definitions(
         reconcile_comment_counts_job,
     ],
     sensors=[
-        thread_resolved_sensor,
+        source_extraction_sensor,
         thread_timeout_sensor,
         memory_lifecycle_sensor,
         quality_refresh_sensor,

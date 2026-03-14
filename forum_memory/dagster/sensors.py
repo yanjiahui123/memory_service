@@ -49,18 +49,21 @@ def _prune_dispatched(session: Session, dispatched_ids: set[str]) -> set[str]:
     return {str(e.id) for e in events}
 
 
-def _build_extract_run_request(event) -> RunRequest:
+def _build_extract_run_request(event, source_type: str) -> RunRequest:
     """Build a RunRequest for the extraction job."""
-    thread_id = str(event.aggregate_id)
+    source_id = str(event.aggregate_id)
     event_id_str = str(event.id)
-    logger.info("Triggering extraction for thread %s (event %s)", thread_id, event.id)
+    logger.info(
+        "Triggering extraction for %s/%s (event %s)", source_type, source_id, event.id,
+    )
     return RunRequest(
         run_key=f"extract-{event.id}",
         run_config={
             "ops": {
-                "load_thread_op": {
+                "load_source_op": {
                     "config": {
-                        "thread_id": thread_id,
+                        "source_type": source_type,
+                        "source_id": source_id,
                         "event_id": event_id_str,
                     }
                 }
@@ -69,18 +72,25 @@ def _build_extract_run_request(event) -> RunRequest:
     )
 
 
-# ── Event-driven: thread.resolved / thread.timeout_closed → extract memories ─────
+# ── Event-driven: extraction from any registered source adapter ─────
 
 @sensor(job_name="extract_memories_job", minimum_interval_seconds=30)
-def thread_resolved_sensor(context: SensorEvaluationContext):
-    """Poll for unprocessed thread.resolved and thread.timeout_closed events and trigger extraction."""
+def source_extraction_sensor(context: SensorEvaluationContext):
+    """Poll for unprocessed extraction-triggering events from all registered adapters."""
+    from forum_memory.core.source_registry import all_event_types, adapter_for_event
+
+    target_event_types = all_event_types()
+    if not target_event_types:
+        yield SkipReason("No source adapters registered")
+        return
+
     dispatched_ids = _load_dispatched_ids(context.cursor)
 
     with Session(engine) as session:
         stmt = (
             select(DomainEvent)
             .where(
-                DomainEvent.event_type.in_(["thread.resolved", "thread.timeout_closed"]),
+                DomainEvent.event_type.in_(target_event_types),
                 DomainEvent.processed.is_(False),
             )
             .order_by(DomainEvent.created_at)
@@ -92,7 +102,7 @@ def thread_resolved_sensor(context: SensorEvaluationContext):
             pruned = _prune_dispatched(session, dispatched_ids)
             if pruned != dispatched_ids:
                 context.update_cursor(json.dumps({"dispatched": list(pruned)}))
-            yield SkipReason("No unprocessed thread.resolved / thread.timeout_closed events")
+            yield SkipReason("No unprocessed extraction events")
             return
 
         new_dispatched = False
@@ -100,7 +110,10 @@ def thread_resolved_sensor(context: SensorEvaluationContext):
             event_id_str = str(event.id)
             if event_id_str in dispatched_ids:
                 continue
-            yield _build_extract_run_request(event)
+            adapter = adapter_for_event(event.event_type)
+            if not adapter:
+                continue
+            yield _build_extract_run_request(event, adapter.source_type())
             dispatched_ids.add(event_id_str)
             new_dispatched = True
 

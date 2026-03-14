@@ -24,6 +24,9 @@ async def lifespan(_app: FastAPI):
     """Startup: create tables, ES index, and background executor."""
     from forum_memory.core.background import init_executor, shutdown_executor
 
+    # Register all source adapters
+    import forum_memory.adapters  # noqa: F401
+
     try:
         init_db()
         logger.info("Database tables initialized successfully")

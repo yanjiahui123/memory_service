@@ -126,7 +126,7 @@ def extract(request: Request, thread_id: UUID, session: Session = Depends(get_db
         raise HTTPException(404, "Thread not found")
     check_board_permission(thread.namespace_id, session, user)
     try:
-        ids = extraction_service.run_extraction(session, thread_id)
+        ids = extraction_service.run_extraction(session, "thread", thread_id)
         return {"memory_ids_created": [str(i) for i in ids]}
     except ValueError as e:
         raise HTTPException(400, str(e)) from e

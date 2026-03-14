@@ -1,7 +1,7 @@
 """Dagster ops/jobs for memory extraction and lifecycle automation.
 
 The extraction pipeline is split into 7 ops for visibility in the Dagster UI:
-  load_thread → compress_discussion → extract_structure → atomize_knowledge
+  load_source → compress_discussion → extract_structure → atomize_knowledge
   → quality_gate → audn_dedup → finalize_extraction
 
 Note: AI answer generation is driven by the background ThreadPoolExecutor in
@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 # ── Extraction pipeline (7 ops) ─────────────────────────
 
 class ExtractConfig(Config):
-    thread_id: str
+    source_type: str
+    source_id: str
     event_id: str
 
 
@@ -42,65 +43,70 @@ def _mark_event_processed(session: Session, event_id: UUID) -> None:
 
 def _skip_result(config: ExtractConfig) -> dict:
     """Build a skip result dict."""
-    return {"skipped": True, "thread_id": config.thread_id, "event_id": config.event_id}
+    return {
+        "skipped": True,
+        "source_type": config.source_type,
+        "source_id": config.source_id,
+        "event_id": config.event_id,
+    }
+
+
+def _build_source_result(config: ExtractConfig, ctx, record) -> dict:
+    """Serialize SourceContext + record into the pipeline dict."""
+    return {
+        "skipped": False,
+        "source_type": config.source_type,
+        "source_id": config.source_id,
+        "event_id": config.event_id,
+        "record_id": str(record.id),
+        "record_created_at": record.created_at.isoformat(),
+        "title": ctx.title,
+        "question": ctx.question,
+        "discussion": ctx.discussion,
+        "namespace_id": str(ctx.namespace_id),
+        "environment": ctx.environment,
+        "source_role": ctx.source_role,
+        "authority": ctx.authority.value,
+        "pending": ctx.pending_human_confirm,
+    }
 
 
 @op
-def load_thread_op(context: OpExecutionContext, config: ExtractConfig) -> dict:
-    """Load thread data, check idempotency, create extraction record."""
+def load_source_op(context: OpExecutionContext, config: ExtractConfig) -> dict:
+    """Load source data via adapter, check idempotency, create extraction record."""
+    from forum_memory.core.source_registry import get_adapter
     from forum_memory.services.extraction_service import (
         already_extracted, cleanup_failed_record, create_record,
-        build_discussion, best_answer_role,
     )
-    from forum_memory.models.thread import Thread
-    from forum_memory.core.state_machine import default_authority, needs_human_confirm
 
-    thread_id = UUID(config.thread_id)
+    source_type = config.source_type
+    source_id = UUID(config.source_id)
     event_id = UUID(config.event_id)
+    adapter = get_adapter(source_type)
 
     with Session(engine) as session:
-        if already_extracted(session, thread_id):
-            logger.info("Thread %s already extracted, skipping", thread_id)
+        if already_extracted(session, source_type, source_id):
+            logger.info("Source %s/%s already extracted, skipping", source_type, source_id)
             _mark_event_processed(session, event_id)
             context.add_output_metadata({"status": "skipped", "reason": "already_extracted"})
             return _skip_result(config)
 
-        thread = session.get(Thread, thread_id)
-        if not thread or not thread.resolved_type:
+        ctx = adapter.load_context(session, source_id)
+        if ctx is None:
             _mark_event_processed(session, event_id)
-            context.add_output_metadata({"status": "skipped", "reason": "thread_not_resolved"})
+            context.add_output_metadata({"status": "skipped", "reason": "source_not_ready"})
             return _skip_result(config)
 
-        cleanup_failed_record(session, thread_id)
-        record = create_record(session, thread)
-
-        discussion = build_discussion(session, thread.id)
-        role = best_answer_role(session, thread)
-        authority = default_authority(thread.resolved_type)
-        pending = needs_human_confirm(thread.resolved_type)
+        cleanup_failed_record(session, source_type, source_id)
+        record = create_record(session, ctx)
 
         context.add_output_metadata({
             "status": "loaded",
-            "thread_title": thread.title[:100],
-            "resolved_type": str(thread.resolved_type),
-            "discussion_chars": len(discussion),
+            "source_type": source_type,
+            "title": ctx.title[:100],
+            "discussion_chars": len(ctx.discussion),
         })
-
-        return {
-            "skipped": False,
-            "thread_id": config.thread_id,
-            "event_id": config.event_id,
-            "record_id": str(record.id),
-            "record_created_at": record.created_at.isoformat(),
-            "title": thread.title,
-            "question": thread.content,
-            "discussion": discussion,
-            "namespace_id": str(thread.namespace_id),
-            "environment": thread.environment,
-            "best_answer_role": role,
-            "authority": authority.value,
-            "pending": pending,
-        }
+        return _build_source_result(config, ctx, record)
 
 
 @op
@@ -227,7 +233,8 @@ def quality_gate_op(context: OpExecutionContext, thread_data: dict) -> dict:
 def _empty_audn_result(thread_data: dict) -> dict:
     """Build an AUDN result dict for skipped/no-results cases."""
     return {
-        "thread_id": thread_data["thread_id"],
+        "source_type": thread_data.get("source_type", "thread"),
+        "source_id": thread_data.get("source_id"),
         "event_id": thread_data["event_id"],
         "record_id": thread_data.get("record_id"),
         "record_created_at": thread_data.get("record_created_at"),
@@ -238,7 +245,25 @@ def _empty_audn_result(thread_data: dict) -> dict:
     }
 
 
-def _process_facts(session, llm, thread, facts, authority, pending, thread_data):
+def _reconstruct_context(thread_data: dict) -> "SourceContext":
+    """Rebuild a SourceContext from the pipeline dict for AUDN processing."""
+    from forum_memory.core.source_context import SourceContext
+
+    return SourceContext(
+        source_type=thread_data.get("source_type", "thread"),
+        source_id=UUID(thread_data["source_id"]),
+        namespace_id=UUID(thread_data["namespace_id"]),
+        title=thread_data["title"],
+        question=thread_data["question"],
+        discussion=thread_data.get("discussion", ""),
+        authority=Authority(thread_data["authority"]),
+        pending_human_confirm=thread_data["pending"],
+        environment=thread_data.get("environment"),
+        source_role=thread_data.get("source_role"),
+    )
+
+
+def _process_facts(session, llm, ctx, facts, thread_data):
     """Process all facts through AUDN. Returns (memory_ids, audn_stats)."""
     from forum_memory.services.extraction_service import process_one_fact
 
@@ -247,9 +272,7 @@ def _process_facts(session, llm, thread, facts, authority, pending, thread_data)
     audn_stats = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
 
     for fact in facts:
-        mid, action = process_one_fact(
-            session, llm, thread, fact, authority, pending, batch_created,
-        )
+        mid, action = process_one_fact(session, llm, ctx, fact, batch_created)
         audn_stats[action] = audn_stats.get(action, 0) + 1
         if mid:
             memory_ids.append(str(mid))
@@ -271,30 +294,26 @@ def audn_dedup_op(context: OpExecutionContext, thread_data: dict) -> dict:
         return _empty_audn_result(thread_data)
 
     from forum_memory.services.extraction_service import rollback_partial_memories
-    from forum_memory.models.thread import Thread
     from forum_memory.providers import get_provider
 
-    thread_id = UUID(thread_data["thread_id"])
-    authority = Authority(thread_data["authority"])
-    pending = thread_data["pending"]
+    source_id = UUID(thread_data["source_id"])
     facts = thread_data["facts"]
     record_created_at = datetime.fromisoformat(thread_data["record_created_at"])
     llm = get_provider()
 
-    with Session(engine) as session:
-        thread = session.get(Thread, thread_id)
-        if not thread:
-            raise ValueError(f"Thread {thread_id} not found in AUDN step")
+    ctx = _reconstruct_context(thread_data)
 
+    with Session(engine) as session:
         try:
             memory_ids, audn_stats = _process_facts(
-                session, llm, thread, facts, authority, pending, thread_data,
+                session, llm, ctx, facts, thread_data,
             )
         except Exception:
             logger.exception(
-                "AUDN failed for thread %s — rolling back partial memories", thread_id,
+                "AUDN failed for source %s/%s — rolling back partial memories",
+                thread_data.get("source_type"), source_id,
             )
-            rollback_partial_memories(session, thread_id, record_created_at)
+            rollback_partial_memories(session, source_id, record_created_at)
             raise
 
     context.add_output_metadata({
@@ -308,7 +327,8 @@ def audn_dedup_op(context: OpExecutionContext, thread_data: dict) -> dict:
     })
 
     return {
-        "thread_id": thread_data["thread_id"],
+        "source_type": thread_data.get("source_type", "thread"),
+        "source_id": thread_data["source_id"],
         "event_id": thread_data["event_id"],
         "record_id": thread_data["record_id"],
         "record_created_at": thread_data["record_created_at"],
@@ -324,7 +344,7 @@ def finalize_extraction_op(context: OpExecutionContext, result: dict):
     """Mark extraction record as COMPLETED and domain event as processed."""
     event_id = UUID(result["event_id"])
 
-    # Early skip — event already marked in load_thread_op
+    # Early skip — event already marked in load_source_op
     if result.get("skipped") and not result.get("record_id"):
         context.add_output_metadata({"status": "skipped_early"})
         return
@@ -352,15 +372,15 @@ def finalize_extraction_op(context: OpExecutionContext, result: dict):
         "audn_stats": json.dumps(result.get("audn_stats", {})),
     })
     logger.info(
-        "Extraction finalized: %d memories from thread %s",
-        memory_count, result["thread_id"],
+        "Extraction finalized: %d memories from %s/%s",
+        memory_count, result.get("source_type", "thread"), result.get("source_id"),
     )
 
 
 @graph
 def extract_memories_graph():
     """7-step extraction pipeline visible as separate nodes in Dagster UI."""
-    loaded = load_thread_op()
+    loaded = load_source_op()
     compressed = compress_discussion_op(loaded)
     structured = extract_structure_op(compressed)
     atomized = atomize_knowledge_op(structured)

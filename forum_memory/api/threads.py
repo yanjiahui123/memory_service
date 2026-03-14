@@ -241,7 +241,7 @@ def delete_comment(
         if is_board_admin and thread.resolved_type:
             from forum_memory.services import extraction_service
             try:
-                extraction_service.re_extract(session, thread_id)
+                extraction_service.re_extract(session, "thread", thread_id)
             except Exception:
                 logger.exception("re_extract failed for thread %s after comment deletion", thread_id)
         return {"ok": True}

@@ -243,11 +243,12 @@ def _import_one_file(
 
 def _extract_worker(thread_id: UUID) -> tuple[UUID, int, str]:
     """Run extraction pipeline for one thread. Returns (thread_id, n_memories, status)."""
+    import forum_memory.adapters  # noqa: F401  — ensure adapters registered
     from forum_memory.services.extraction_service import run_extraction
 
     try:
         with Session(engine) as session:
-            mids = run_extraction(session, thread_id)
+            mids = run_extraction(session, "thread", thread_id)
             return thread_id, len(mids), "ok"
     except Exception as e:
         logger.warning("Extraction failed for thread %s: %s", thread_id, e)
