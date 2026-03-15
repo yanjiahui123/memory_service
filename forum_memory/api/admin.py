@@ -22,6 +22,10 @@ from forum_memory.models.namespace import Namespace
 from forum_memory.models.operation_log import OperationLog
 from forum_memory.models.user import User
 from forum_memory.schemas.admin import ImportTopicsRequest, ImportTopicsResult
+from forum_memory.schemas.relation import (
+    ContradictionResolveRequest,
+    ContradictionResolveResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +357,31 @@ def list_contradictions(
 
     items, total = relation_service.list_contradictions(session, namespace_id, page, size)
     return {"items": [RelationRead.model_validate(r) for r in items], "total": total}
+
+
+@router.post("/contradictions/{relation_id}/resolve",
+             response_model=ContradictionResolveResponse)
+def resolve_contradiction_endpoint(
+    relation_id: UUID,
+    body: ContradictionResolveRequest,
+    session: Session = Depends(get_db),
+    admin_user: User = Depends(require_admin),
+):
+    """Resolve a CONTRADICTS relation: keep_source, keep_target, or keep_both."""
+    from forum_memory.services import relation_service
+
+    success, detail = relation_service.resolve_contradiction(
+        session=session,
+        relation_id=relation_id,
+        action=body.action,
+        reason=body.reason,
+        operator_id=admin_user.id,
+    )
+    if not success:
+        raise HTTPException(400, detail)
+    return ContradictionResolveResponse(
+        resolved=True, action=body.action, detail=detail,
+    )
 
 
 # ─── Audit Logs ───────────────────────────────────────────────────────────────

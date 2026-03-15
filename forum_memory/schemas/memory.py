@@ -85,6 +85,8 @@ class RelatedMemoryHint(BaseModel):
     label: str
     memory_id: UUID
     content_preview: str
+    confidence: float = 1.0
+    authority: str | None = None
 
 
 class MemorySearchHit(BaseModel):

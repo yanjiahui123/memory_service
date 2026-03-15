@@ -7,7 +7,7 @@ from sqlmodel import Session, select, or_
 
 from forum_memory.models.memory_relation import MemoryRelation
 from forum_memory.models.memory import Memory
-from forum_memory.models.enums import RelationType, MemoryStatus
+from forum_memory.models.enums import RelationType, MemoryStatus, OperationType
 
 logger = logging.getLogger(__name__)
 
@@ -126,3 +126,111 @@ def delete_relation(session: Session, relation_id: UUID) -> bool:
     session.delete(rel)
     session.commit()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Contradiction resolution
+# ---------------------------------------------------------------------------
+
+def resolve_contradiction(
+    session: Session,
+    relation_id: UUID,
+    action: str,
+    reason: str,
+    operator_id: UUID | None = None,
+) -> tuple[bool, str]:
+    """Resolve a CONTRADICTS relation. Returns (success, detail_message)."""
+    rel = session.get(MemoryRelation, relation_id)
+    if not rel:
+        return False, "关系不存在"
+    if rel.relation_type != RelationType.CONTRADICTS:
+        return False, "该关系不是 CONTRADICTS 类型"
+
+    if action == "keep_source":
+        detail = _resolve_keep_source(session, rel, reason, operator_id)
+    elif action == "keep_target":
+        detail = _resolve_keep_target(session, rel, reason, operator_id)
+    elif action == "keep_both":
+        detail = _resolve_keep_both(session, rel)
+    else:
+        return False, f"未知操作: {action}"
+
+    session.delete(rel)
+    session.commit()
+    return True, detail
+
+
+def _resolve_keep_source(
+    session: Session, rel: MemoryRelation, reason: str, operator_id: UUID | None,
+) -> str:
+    """Keep source (new), soft-delete target (old), create SUPERSEDES."""
+    _soft_delete_memory(session, rel.target_memory_id, reason, operator_id)
+    _create_supersedes_edge(session, rel.source_memory_id, rel.target_memory_id)
+    _clear_pending_flag(session, rel.source_memory_id)
+    return f"保留新记忆 {rel.source_memory_id}，淘汰旧记忆 {rel.target_memory_id}"
+
+
+def _resolve_keep_target(
+    session: Session, rel: MemoryRelation, reason: str, operator_id: UUID | None,
+) -> str:
+    """Keep target (old), soft-delete source (new), create SUPERSEDES."""
+    _soft_delete_memory(session, rel.source_memory_id, reason, operator_id)
+    _create_supersedes_edge(session, rel.target_memory_id, rel.source_memory_id)
+    return f"保留旧记忆 {rel.target_memory_id}，淘汰新记忆 {rel.source_memory_id}"
+
+
+def _resolve_keep_both(session: Session, rel: MemoryRelation) -> str:
+    """Keep both memories, just clear pending flags."""
+    _clear_pending_flag(session, rel.source_memory_id)
+    _clear_pending_flag(session, rel.target_memory_id)
+    return f"保留两条记忆 {rel.source_memory_id} 和 {rel.target_memory_id}"
+
+
+def _soft_delete_memory(
+    session: Session, memory_id: UUID, reason: str, operator_id: UUID | None,
+) -> None:
+    """Soft-delete a memory and log the operation."""
+    mem = session.get(Memory, memory_id)
+    if not mem:
+        return
+    mem.status = MemoryStatus.DELETED
+    mem.indexed_at = None
+    _log_resolution(session, mem, reason, operator_id)
+
+
+def _create_supersedes_edge(session: Session, winner_id: UUID, loser_id: UUID) -> None:
+    """Create a SUPERSEDES edge from winner to loser (idempotent)."""
+    existing = _find_existing(session, winner_id, loser_id, RelationType.SUPERSEDES)
+    if existing:
+        return
+    edge = MemoryRelation(
+        source_memory_id=winner_id,
+        target_memory_id=loser_id,
+        relation_type=RelationType.SUPERSEDES,
+        origin="admin_resolve",
+    )
+    session.add(edge)
+
+
+def _clear_pending_flag(session: Session, memory_id: UUID) -> None:
+    """Clear pending_human_confirm flag."""
+    mem = session.get(Memory, memory_id)
+    if mem and mem.pending_human_confirm:
+        mem.pending_human_confirm = False
+
+
+def _log_resolution(
+    session: Session, memory: Memory, reason: str, operator_id: UUID | None,
+) -> None:
+    """Add an operation log entry for the contradiction resolution."""
+    from forum_memory.models.operation_log import OperationLog
+
+    log_entry = OperationLog(
+        memory_id=memory.id,
+        operation=OperationType.DELETE,
+        operator_id=operator_id,
+        operator_type="admin",
+        reason=f"contradiction_resolve: {reason}",
+        before_snapshot={"content": memory.content, "status": memory.status},
+    )
+    session.add(log_entry)

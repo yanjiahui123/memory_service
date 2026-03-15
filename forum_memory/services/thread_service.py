@@ -333,12 +333,29 @@ def _search_related_memories(session, question: str, namespace_id: UUID, enabled
     lines = []
     cited_ids = []
     for h in search_result.hits:
-        prefix = f"[M-{str(h.memory.id)[:8]}]"
-        lines.append(f"{prefix} {h.memory.content}")
+        lines.append(_format_hit_line(h))
         cited_ids.append(h.memory.id)
         for rel in h.related:
-            lines.append(f"  ↳ [{rel.label}] {rel.content_preview}")
+            lines.append(_format_relation_hint(rel))
     return "\n\n".join(lines), cited_ids
+
+
+def _format_hit_line(hit) -> str:
+    """Format a single search hit with authority and quality metadata."""
+    mem = hit.memory
+    short_id = str(mem.id)[:8]
+    quality = getattr(mem, "quality_score", 0)
+    return f"[M-{short_id}] ({mem.authority}, quality={quality:.2f}) {mem.content}"
+
+
+def _format_relation_hint(rel) -> str:
+    """Format a relation hint with type-specific markers for LLM context."""
+    if rel.relation_type == "CONTRADICTS":
+        conf = f", 置信度={rel.confidence:.1f}" if hasattr(rel, "confidence") else ""
+        return f"  \u26a0 [存在争议{conf}] {rel.content_preview}"
+    if rel.relation_type == "SUPERSEDES":
+        return f"  \u26a0 [已被取代] {rel.content_preview}"
+    return f"  \u21b3 [{rel.label}] {rel.content_preview}"
 
 
 def _query_rag_context(ns_config: dict, question: str, enabled: bool) -> tuple[str, str | None]:

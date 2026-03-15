@@ -1,5 +1,6 @@
 """Memory relation schemas."""
 
+from typing import Literal
 from uuid import UUID
 from datetime import datetime
 
@@ -21,3 +22,18 @@ class RelationRead(BaseModel):
     origin: str
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Contradiction resolution
+# ---------------------------------------------------------------------------
+
+class ContradictionResolveRequest(BaseModel):
+    action: Literal["keep_source", "keep_target", "keep_both"]
+    reason: str = ""
+
+
+class ContradictionResolveResponse(BaseModel):
+    resolved: bool
+    action: str
+    detail: str

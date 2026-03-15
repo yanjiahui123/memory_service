@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from forum_memory.models.memory import Memory
 from forum_memory.models.namespace import Namespace
-from forum_memory.models.enums import MemoryStatus
+from forum_memory.models.enums import MemoryStatus, RelationType
 from forum_memory.schemas.memory import MemorySearchRequest, MemorySearchResponse, MemorySearchHit, MemoryRead
 from forum_memory.core.prompts import QUERY_REWRITE_SYSTEM, QUERY_REWRITE_USER
 from forum_memory.providers import get_provider
@@ -299,28 +299,46 @@ def _expand_hit_relations(session: Session, hits: list[MemorySearchHit]) -> None
     for rels in relations_map.values():
         for rel in rels:
             related_ids.add(rel.target_memory_id)
-    preview_map = _fetch_memory_previews(session, list(related_ids))
+    detail_map = _fetch_memory_details(session, list(related_ids))
 
     for hit in hits[:5]:
-        rels = relations_map.get(hit.memory.id, [])
-        for rel in rels[:3]:
-            preview = preview_map.get(rel.target_memory_id)
-            if not preview:
-                continue
-            label = _RELATION_LABELS.get(rel.relation_type.value, rel.relation_type.value)
-            hint = RelatedMemoryHint(
-                relation_type=rel.relation_type.value,
-                label=label,
-                memory_id=rel.target_memory_id,
-                content_preview=preview[:100],
-            )
-            hit.related.append(hint)
+        _attach_hints(hit, relations_map, detail_map)
 
 
-def _fetch_memory_previews(session: Session, memory_ids: list[UUID]) -> dict[UUID, str]:
-    """Fetch memory content by IDs for relation preview."""
+def _attach_hints(
+    hit: MemorySearchHit,
+    relations_map: dict,
+    detail_map: dict[UUID, dict],
+) -> None:
+    """Attach relation hints to a single search hit."""
+    from forum_memory.schemas.memory import RelatedMemoryHint
+
+    rels = relations_map.get(hit.memory.id, [])
+    for rel in rels[:3]:
+        details = detail_map.get(rel.target_memory_id)
+        if not details:
+            continue
+        label = _RELATION_LABELS.get(rel.relation_type.value, rel.relation_type.value)
+        # CONTRADICTS: full content for AI context; others: 100-char preview
+        content = details["content"]
+        preview = content if rel.relation_type == RelationType.CONTRADICTS else content[:100]
+        hint = RelatedMemoryHint(
+            relation_type=rel.relation_type.value,
+            label=label,
+            memory_id=rel.target_memory_id,
+            content_preview=preview,
+            confidence=rel.confidence,
+            authority=details["authority"],
+        )
+        hit.related.append(hint)
+
+
+def _fetch_memory_details(session: Session, memory_ids: list[UUID]) -> dict[UUID, dict]:
+    """Fetch memory content and authority by IDs for relation hints."""
     if not memory_ids:
         return {}
-    stmt = select(Memory.id, Memory.content).where(Memory.id.in_(memory_ids))
+    stmt = select(Memory.id, Memory.content, Memory.authority).where(
+        Memory.id.in_(memory_ids)
+    )
     rows = session.exec(stmt).all()
-    return {row[0]: row[1] for row in rows}
+    return {row[0]: {"content": row[1], "authority": row[2]} for row in rows}
