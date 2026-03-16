@@ -7,7 +7,7 @@ from forum_memory.models.enums import SystemRole
 
 class User(UUIDMixin, TimestampMixin, table=True):
     """Forum user."""
-    __tablename__ = "memo_users"
+    __tablename__ = "users"
 
     employee_id: str = Field(max_length=20, unique=True, index=True,
                              description="工号，如 00000000、00000001")

@@ -578,7 +578,7 @@ def list_all_tags(
     # Use jsonb_array_elements_text to unnest tags array in SQL
     tag_unnest = sa_text(
         "SELECT jsonb_array_elements_text(tags) AS tag "
-        "FROM memo_memories "
+        "FROM memories "
         "WHERE status != 'DELETED' AND tags IS NOT NULL"
         + (" AND namespace_id = :ns_id" if namespace_id else "")
     )
@@ -639,7 +639,7 @@ def _apply_filters(stmt, filters: MemoryFilter):
         for tag in filters.tags.split(","):
             tag = tag.strip()
             if tag:
-                stmt = stmt.where(literal_column("memo_memories.tags").op("@>")(sa_text(f"'{json.dumps([tag])}'::jsonb")))
+                stmt = stmt.where(literal_column("memories.tags").op("@>")(sa_text(f"'{json.dumps([tag])}'::jsonb")))
     if filters.q:
         stmt = stmt.where(Memory.content.ilike(f"%{filters.q}%"))
     if filters.source_id:

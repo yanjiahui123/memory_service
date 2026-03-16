@@ -12,9 +12,9 @@ from forum_memory.models.enums import Authority, MemoryStatus, KnowledgeType
 
 class Memory(UUIDMixin, TimestampMixin, table=True):
     """Single knowledge unit extracted from resolved threads."""
-    __tablename__ = "memo_memories"
+    __tablename__ = "memories"
 
-    namespace_id: UUID = Field(foreign_key="memo_namespaces.id", index=True)
+    namespace_id: UUID = Field(foreign_key="namespaces.id", index=True)
 
     # Content
     content: str = Field(sa_column=Column(Text, nullable=False))
