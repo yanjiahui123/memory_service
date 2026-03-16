@@ -464,8 +464,8 @@ def reconcile_comment_counts(session: Session) -> int:
 
     rows = session.execute(sa_text(
         "SELECT t.id, t.comment_count, COALESCE(c.cnt, 0) AS actual "
-        "FROM threads t "
-        "LEFT JOIN (SELECT thread_id, COUNT(*) AS cnt FROM comments "
+        "FROM memo_threads t "
+        "LEFT JOIN (SELECT thread_id, COUNT(*) AS cnt FROM memo_comments "
         "           WHERE deleted_at IS NULL GROUP BY thread_id) c "
         "  ON t.id = c.thread_id "
         "WHERE t.status != 'DELETED' AND t.comment_count != COALESCE(c.cnt, 0)"

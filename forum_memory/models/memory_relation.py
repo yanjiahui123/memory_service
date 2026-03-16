@@ -11,7 +11,7 @@ from forum_memory.models.enums import RelationType
 
 class MemoryRelation(UUIDMixin, TimestampMixin, table=True):
     """Directed edge between two memories within the same namespace."""
-    __tablename__ = "memory_relations"
+    __tablename__ = "memo_memory_relations"
     __table_args__ = (
         UniqueConstraint(
             "source_memory_id", "target_memory_id", "relation_type",
@@ -19,8 +19,8 @@ class MemoryRelation(UUIDMixin, TimestampMixin, table=True):
         ),
     )
 
-    source_memory_id: UUID = Field(foreign_key="memories.id", index=True)
-    target_memory_id: UUID = Field(foreign_key="memories.id", index=True)
+    source_memory_id: UUID = Field(foreign_key="memo_memories.id", index=True)
+    target_memory_id: UUID = Field(foreign_key="memo_memories.id", index=True)
     relation_type: RelationType = Field(index=True)
     confidence: float = Field(default=1.0)
     origin: str = Field(default="audn", max_length=50)

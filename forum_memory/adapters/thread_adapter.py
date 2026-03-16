@@ -52,7 +52,7 @@ class ThreadSourceAdapter(SourceAdapter):
 
     def lock_for_re_extract(self, session: Session, source_id: UUID) -> None:
         session.execute(
-            sa_text("SELECT id FROM threads WHERE id = :sid FOR UPDATE NOWAIT"),
+            sa_text("SELECT id FROM memo_threads WHERE id = :sid FOR UPDATE NOWAIT"),
             {"sid": str(source_id)},
         )
 
