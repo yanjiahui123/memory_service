@@ -25,6 +25,23 @@ def _find_chunks_in_dict(data: dict) -> list | None:
     return None
 
 
+def _extract_source(item: dict) -> str | None:
+    """Extract source path from chunk metadata."""
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata.get("source")
+    return None
+
+
+def _format_chunk_text(item: dict) -> str:
+    """Format a single chunk dict with its source for LLM prompt."""
+    text = item.get("text", item.get("content", str(item)))
+    source = _extract_source(item)
+    if source:
+        return f"[来源: {source}]\n{text}"
+    return text
+
+
 def _format_chunks(chunks: list) -> tuple[str, str | None]:
     """Format a list of chunks into prompt text and optional JSON for UI display."""
     parts = []
@@ -32,7 +49,7 @@ def _format_chunks(chunks: list) -> tuple[str, str | None]:
         if isinstance(item, str):
             parts.append(item)
         elif isinstance(item, dict):
-            parts.append(item.get("text", item.get("content", str(item))))
+            parts.append(_format_chunk_text(item))
     prompt_text = "\n\n".join(parts)
     structured = [c for c in chunks if isinstance(c, dict) and "text" in c]
     chunks_json = json.dumps(structured, ensure_ascii=False) if structured else None
@@ -57,6 +74,8 @@ def _parse_rag_response(data) -> tuple[str, str | None]:
     """Parse an arbitrary RAG API response into (prompt_text, chunks_json)."""
     if isinstance(data, str):
         return data, None
+    if isinstance(data, list):
+        return _format_chunks(data)
     if isinstance(data, dict):
         return _parse_dict_response(data)
     return str(data), None
