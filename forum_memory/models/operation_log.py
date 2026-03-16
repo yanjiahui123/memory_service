@@ -11,11 +11,11 @@ from forum_memory.models.enums import OperationType
 
 class OperationLog(UUIDMixin, TimestampMixin, table=True):
     """Audit log for every memory mutation."""
-    __tablename__ = "operation_logs"
+    __tablename__ = "memo_operation_logs"
 
-    memory_id: UUID = Field(foreign_key="memories.id", index=True)
+    memory_id: UUID = Field(foreign_key="memo_memories.id", index=True)
     operation: OperationType = Field(index=True)
-    operator_id: UUID | None = Field(default=None, foreign_key="users.id")
+    operator_id: UUID | None = Field(default=None, foreign_key="memo_users.id")
     operator_type: str = Field(default="system", max_length=50)
     reason: str | None = Field(default=None, max_length=500)
     before_snapshot: dict | None = Field(default=None, sa_column=Column("before_snapshot", JSON))
