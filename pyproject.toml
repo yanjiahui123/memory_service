@@ -16,6 +16,7 @@ dependencies = [
     "requests>=2.31",
     "python-multipart>=0.0.9",
     "dagster>=1.6",
+    "dagster-postgres>=0.22",
     "dagster-webserver>=1.6",
     "slowapi>=0.1.9",
     "pyjwt>=2.8",

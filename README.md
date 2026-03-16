@@ -16,7 +16,7 @@ cp .env.example .env
 uvicorn forum_memory.main:app --reload --port 8000
 
 # 4. 启动 Dagster 调度（自动提取 + 生命周期管理）
-dagster dev -m forum_memory.dagster.definitions
+dagster dev
 
 # 5. 批量回填已有记忆到 ES（首次启用 ES 时运行）
 python -m forum_memory.scripts.reindex_memories
@@ -74,8 +74,8 @@ forum_memory/
 │   └── es_service.py       # Elasticsearch 客户端和索引管理
 ├── dagster/                # Dagster 任务编排
 │   ├── definitions.py      # Dagster Definitions 入口
-│   ├── assets.py           # 4 个 Job（提取/超时/生命周期/质量刷新）
-│   ├── sensors.py          # 4 个 Sensor（事件驱动 + 定时调度）
+│   ├── assets.py           # 6 个 Job（提取/超时/生命周期/质量刷新/ES修复/评论计数）
+│   ├── sensors.py          # 6 个 Sensor（事件驱动 + 定时调度）
 │   └── resources.py        # DB Resource
 ├── scripts/                # 运维脚本
 │   ├── reindex_memories.py     # ES 批量回填
@@ -187,14 +187,16 @@ forum_memory/
 
 ## Dagster 编排
 
-启动：`dagster dev -m forum_memory.dagster.definitions`
+启动：`dagster dev`（workspace.yaml 已声明入口模块）
 
 | Sensor | 触发频率 | Job | 说明 |
 |--------|---------|-----|------|
-| `thread_resolved_sensor` | 30 秒 | `extract_memories_job` | 监听 thread.resolved 事件，自动提取知识 |
+| `source_extraction_sensor` | 30 秒 | `extract_memories_job` | 监听所有已注册来源的关闭事件，自动提取知识 |
 | `thread_timeout_sensor` | 1 小时 | `timeout_threads_job` | 超时关闭超过 N 天的 OPEN 帖子 |
 | `memory_lifecycle_sensor` | 1 天 | `lifecycle_memories_job` | ACTIVE→COLD（180天）、COLD→ARCHIVED（365天） |
 | `quality_refresh_sensor` | 1 天 | `refresh_quality_job` | 刷新所有 ACTIVE 记忆的质量评分 |
+| `es_sync_repair_sensor` | 10 分钟 | `repair_es_sync_job` | 修复 DB-ES 一致性（indexed_at IS NULL 的记忆重新索引） |
+| `comment_count_reconcile_sensor` | 1 天 | `reconcile_comment_counts_job` | 修正帖子评论计数偏移 |
 
 ## 配置说明
 

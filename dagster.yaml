@@ -3,6 +3,7 @@
 #
 # 默认 Dagster 使用本地 SQLite 存储运行记录和事件日志。
 # 生产环境建议切换为 PostgreSQL，以支持多进程部署和持久化。
+# 需要安装: pip install dagster-postgres
 #
 # 使用前请设置以下环境变量:
 #   DAGSTER_PG_HOST      — 数据库主机（默认 localhost）
@@ -24,10 +25,6 @@ storage:
         env: DAGSTER_PG_PASSWORD
       db_name:
         env: DAGSTER_PG_DB
-
-run_launcher:
-  module: dagster.core.launcher
-  class: DefaultRunLauncher
 
 telemetry:
   enabled: false
