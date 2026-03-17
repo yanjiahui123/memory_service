@@ -575,7 +575,7 @@ def list_all_tags(
 
     # Use jsonb_array_elements_text to unnest tags array in SQL
     tag_unnest = sa_text(
-        "SELECT jsonb_array_elements_text(tags) AS tag "
+        "SELECT jsonb_array_elements_text(tags::jsonb) AS tag "
         "FROM memo_memories "
         "WHERE status != 'DELETED' AND tags IS NOT NULL"
         + (" AND namespace_id = :ns_id" if namespace_id else "")
