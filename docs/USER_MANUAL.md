@@ -9,7 +9,7 @@
 5. [管理员指南](#5-管理员指南)
 6. [系统配置](#6-系统配置)
 7. [API 参考](#7-api-参考)
-8. [Dagster 编排](#8-dagster-编排)
+8. [内置调度器](#8-内置调度器)
 9. [运维指南](#9-运维指南)
 10. [常见问题](#10-常见问题)
 
@@ -45,10 +45,10 @@ Forum Memory Agent 是一个**智能知识论坛系统**，它将传统论坛与
                               │
                     ┌─────────┼─────────┐
                     ↓         ↓         ↓
-             ┌──────────┐ ┌──────┐ ┌──────────┐
-             │ ES 8.9   │ │ LLM  │ │ Dagster  │
-             │ 混合搜索  │ │ 提供商│ │ 异步编排  │
-             └──────────┘ └──────┘ └──────────┘
+             ┌──────────┐ ┌──────┐
+             │ ES 8.9   │ │ LLM  │
+             │ 混合搜索  │ │ 提供商│
+             └──────────┘ └──────┘
 ```
 
 ---
@@ -61,7 +61,7 @@ Forum Memory Agent 是一个**智能知识论坛系统**，它将传统论坛与
 - Node.js 18+
 - PostgreSQL 14+
 - Elasticsearch 8.9+
-- Dagster（用于异步编排）
+- APScheduler（随 FastAPI 自动启动，无需独立进程）
 
 ### 2.2 后端启动
 
@@ -80,11 +80,8 @@ pip install -r requirements.txt
 # 3. 初始化数据库
 python -m forum_memory.scripts.init_db
 
-# 4. 启动 API 服务
+# 4. 启动 API 服务（调度器随 FastAPI 自动启动）
 uvicorn forum_memory.main:app --host 0.0.0.0 --port 8000
-
-# 5. 启动 Dagster（新终端）
-dagster dev -m forum_memory.dagster.definitions
 ```
 
 ### 2.3 前端启动
@@ -416,35 +413,28 @@ DELETED（软删除）        DELETED                  DELETED
 
 ---
 
-## 8. Dagster 编排
+## 8. 内置调度器
 
-### 8.1 传感器（Sensors）
+调度器基于 APScheduler，随 FastAPI 进程自动启动，无需独立进程。
 
-| 传感器 | 触发条件 | 功能 |
-|--------|---------|------|
-| `thread_resolved_sensor` | 每 30 秒轮询 | 检测帖子解决事件，触发知识提取 |
-| `thread_timeout_sensor` | 每小时 | 批量超时关闭过期帖子 |
-| `memory_lifecycle_sensor` | 每天 | 执行记忆冷存/归档转换 |
-| `quality_refresh_sensor` | 每天 | 批量刷新质量评分 |
+### 8.1 调度任务列表
 
-### 8.2 作业（Jobs）
+| 任务 | 触发频率 | 功能 |
+|------|---------|------|
+| `extraction_poller` | 每 30 秒 | 轮询 DomainEvent 表，触发知识提取 |
+| `thread_timeout` | 每小时 | 批量超时关闭过期帖子 |
+| `memory_lifecycle` | 每天 02:00 | 执行记忆冷存/归档转换 |
+| `quality_refresh` | 每天 03:00 | 批量刷新质量评分 |
+| `es_sync_repair` | 每 10 分钟 | 修复 DB-ES 一致性 |
+| `comment_count_reconcile` | 每天 04:00 | 修复评论计数偏移 |
 
-**知识提取作业** (`extract_memories_job`)：
+### 8.2 知识提取流水线
+
 ```
-load_thread_discussion → compress_discussion → extract_facts → process_facts_audn → finalize_extraction
+加载来源 → 压缩讨论 → 结构化分析 → 原子化知识 → 质量门控 → AUDN去重 → 完成
 ```
 
-**其他作业**：
-- `timeout_threads_job`：批量超时关闭帖子
-- `lifecycle_memories_job`：记忆状态转换
-- `refresh_quality_job`：质量评分刷新
-
-### 8.3 Dagster UI
-
-启动 `dagster dev` 后访问 `http://localhost:3000`，可查看：
-- 作业运行历史和日志
-- 传感器状态和触发记录
-- 手动触发作业执行
+所有任务设置 `max_instances=1`，防止并发重入。任务失败会记录日志，不影响其他任务执行。
 
 ---
 
@@ -463,7 +453,7 @@ python -m forum_memory.scripts.backfill
 ### 9.2 监控要点
 
 - **ES 索引健康**：检查 ES 集群状态和索引大小
-- **Dagster 作业**：监控提取作业的成功率和延迟
+- **调度任务**：监控提取任务的成功率和延迟（查看应用日志）
 - **LLM API**：监控调用延迟和错误率
 - **记忆质量分布**：定期审查低质量记忆（< 0.3）
 
@@ -488,7 +478,7 @@ python -m forum_memory.scripts.backfill
 ### Q: 知识提取没有触发？
 
 1. 检查帖子状态是否已变为 RESOLVED 或 TIMEOUT_CLOSED
-2. 检查 Dagster 传感器是否正常运行
+2. 检查 FastAPI 日志中 `[scheduler:extraction_poller]` 是否正常运行
 3. 查看 `DomainEvent` 表中事件是否已标记 `processed=True`
 4. 可手动调用 `POST /api/v1/memories/extract/{thread_id}`
 

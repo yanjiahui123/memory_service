@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Startup: create tables, ES index, and background executor."""
+    """Startup: create tables, ES index, background executor, and scheduler."""
     from forum_memory.core.background import init_executor, shutdown_executor
+    from forum_memory.scheduler.scheduler import init_scheduler, shutdown_scheduler
 
     # Register all source adapters
     import forum_memory.adapters  # noqa: F401
@@ -36,7 +37,9 @@ async def lifespan(_app: FastAPI):
     _ensure_es_indices()
 
     init_executor(max_workers=4)
+    init_scheduler()
     yield
+    shutdown_scheduler()
     shutdown_executor()
 
 

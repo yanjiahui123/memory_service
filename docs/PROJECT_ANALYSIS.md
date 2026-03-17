@@ -32,7 +32,7 @@
   └─ resolve_thread()（需认证+权限检查） ← [本次新增认证]
        ├─ _update_resolved_citations()  ← 递增所有引用记忆的 resolved_citation_count
        ├─ refresh_quality() × N         ← 立即刷新受影响记忆的质量分
-       └─ DomainEvent("thread.resolved") ──→ Dagster sensor
+       └─ DomainEvent("thread.resolved") ──→ APScheduler poller
                                                └─ run_extraction()
                                                     ├─ SELECT ... FOR UPDATE NOWAIT  ← 防并发
                                                     ├─ 压缩讨论（保留代码块）← [本次改进]
@@ -57,12 +57,12 @@
 |------|------|
 | AI 回答生成 | 后台 ThreadPoolExecutor（fire-and-forget，独立 session） |
 | AI 回答就绪通知 | SSE EventSource `/threads/{id}/ai-answer/stream`，需认证，最长 60 秒 |
-| 记忆提取 | Dagster sensor 轮询 DomainEvent 表（30s 间隔），失败不标记已处理 |
-| ES-DB 同步修复 | Dagster sensor 每 10 分钟扫描 `indexed_at IS NULL` |
+| 记忆提取 | APScheduler 轮询 DomainEvent 表（30s 间隔），失败不标记已处理 |
+| ES-DB 同步修复 | APScheduler 每 10 分钟扫描 `indexed_at IS NULL` |
 | ES 索引分词 | 优先使用 `ik_max_word`（中文分词），不可用时回退 `standard` |
-| 帖子超时关闭 | Dagster sensor 每小时触发 `batch_timeout_threads()` |
-| 记忆生命周期 | Dagster sensor 每日触发 ACTIVE→COLD→ARCHIVED 转换 |
-| 质量分刷新 | Dagster sensor 每日触发 `bulk_refresh_quality()`，embed_batch + bulk_reindex |
+| 帖子超时关闭 | APScheduler 每小时触发 `batch_timeout_threads()` |
+| 记忆生命周期 | APScheduler 每日触发 ACTIVE→COLD→ARCHIVED 转换 |
+| 质量分刷新 | APScheduler 每日触发 `bulk_refresh_quality()`，embed_batch + bulk_reindex |
 | 搜索排序 | 70% 语义相关性（rerank 归一化）+ 30% quality_score 加权融合 |
 | SQL 回退搜索 | 关键词 OR 逻辑（提升召回率） |
 | 查询改写 | 词数 > 4 时调用 LLM 改写，≤ 4 词直接搜索节省延迟 |
@@ -100,7 +100,7 @@ quality_score =
 | 后端框架 | FastAPI (同步路由) | 无 async/await |
 | ORM | SQLModel + PostgreSQL | psycopg2 同步驱动，pool_timeout=10s |
 | 搜索引擎 | Elasticsearch 8.9 | 每板块独立索引，BM25+KNN 混合搜索，支持中文分词器 |
-| 任务编排 | Dagster (sensor 轮询) | 独立进程运行，6 个 sensor |
+| 任务编排 | APScheduler (内置调度) | 随 FastAPI 进程启动，6 个定时任务 |
 | 后台任务 | ThreadPoolExecutor (4 workers) | 仅 AI 回答生成 |
 | LLM | OpenAI / Custom HTTP | 同步调用，timeout=60s |
 | 前端框架 | React 18 + TypeScript + Vite | 严格模式 |
@@ -109,16 +109,16 @@ quality_score =
 | 状态管理 | React Context + useState | |
 | Markdown | react-markdown + remark-gfm | |
 
-### 1.6 Dagster Sensor 全列表
+### 1.6 调度任务全列表
 
-| Sensor | 触发频率 | 功能 |
-|--------|---------|------|
-| `thread_resolved_sensor` | 事件驱动（30s 轮询） | 提取记忆（cursor 自动剪枝） |
-| `thread_timeout_sensor` | 每 1 小时 | 超时关闭帖子 |
-| `memory_lifecycle_sensor` | 每日 | ACTIVE→COLD→ARCHIVED |
-| `quality_refresh_sensor` | 每日 | 批量刷新质量分 |
-| `es_sync_repair_sensor` | 每 10 分钟 | 修复 ES-DB 不一致 |
-| `comment_count_reconcile_sensor` | 每日 | 修复 comment_count 漂移 |
+| 任务 | 触发频率 | 功能 |
+|------|---------|------|
+| `extraction_poller` | 事件驱动（30s 轮询） | 提取记忆 |
+| `thread_timeout` | 每 1 小时 | 超时关闭帖子 |
+| `memory_lifecycle` | 每日 02:00 | ACTIVE→COLD→ARCHIVED |
+| `quality_refresh` | 每日 03:00 | 批量刷新质量分 |
+| `es_sync_repair` | 每 10 分钟 | 修复 ES-DB 不一致 |
+| `comment_count_reconcile` | 每日 04:00 | 修复 comment_count 漂移 |
 
 ---
 
@@ -135,7 +135,7 @@ quality_score =
 | 3 | SSE 端点阻塞 worker 120s 无认证 | 添加认证 + namespace 读权限检查；超时从 120s 降至 60s | `api/threads.py` |
 | 4 | LOCKED 记忆 AUDN UPDATE/DELETE 丢数据 | `_apply_update`: LOCKED 时创建新独立条目（pending_human_confirm=True）；`_apply_delete`: LOCKED 时标记原记忆待审而非静默跳过 | `memory_service.py` |
 | 5 | ES 删除在 DB commit 之前执行 | 重排序：先 DB commit，再删除 ES 文档；设置 `indexed_at=None` 作为修复 sensor 安全网 | `thread_service.py` |
-| 6 | 提取失败后事件被标记已处理 | 移除 `finally` 无条件标记；仅在成功或预期跳过(ValueError)时标记 `processed=True`，LLM/网络失败保留未处理状态供重试 | `dagster/assets.py` |
+| 6 | 提取失败后事件被标记已处理 | 移除 `finally` 无条件标记；仅在成功或预期跳过(ValueError)时标记 `processed=True`，LLM/网络失败保留未处理状态供重试 | `scheduler/event_poller.py` |
 | 7 | ES 索引未配置中文分词器 | 新增 `_detect_analyzer()` 自动检测 `ik_max_word` 可用性，不可用回退 `standard` | `es_service.py` |
 
 ### 2.2 P1 中等问题（已修复）
@@ -148,7 +148,7 @@ quality_score =
 | 12 | SQL 回退搜索 AND 逻辑低召回 | 改为 OR 逻辑（`sqlalchemy.or_`），最多取 5 个关键词 | `search_service.py` |
 | 13 | `retrieve_count` 并发更新丢失 | 改用 SQL 表达式 `Memory.retrieve_count + 1` 批量更新，替代 Python 层 read-modify-write | `search_service.py` |
 | 14 | Tag 过滤字符串包含误匹配 | 改用 PostgreSQL JSONB `@>` 操作符精确匹配 | `memory_service.py` |
-| 16 | Sensor cursor 无界增长 | 每次 dispatch 后剪枝：只保留实际未处理的事件 ID | `dagster/sensors.py` |
+| 16 | Sensor cursor 无界增长 | 已移除（APScheduler 替代后不再需要 cursor） | N/A |
 | 18 | 压缩 prompt 未保留代码块 | 添加明确指令：代码块、命令、错误信息、配置片段必须原样保留 | `core/prompts.py` |
 
 ### 2.3 P2 前端问题（已修复）
@@ -169,10 +169,10 @@ quality_score =
 | 1 | AI 回答同步阻塞 HTTP 请求 | 后台 ThreadPoolExecutor，HTTP 立即返回 | `thread_service.py` |
 | 2 | 提取幂等性：FAILED 不重试 | `_already_extracted()` 只检查 COMPLETED，`_cleanup_failed_record()` 删除 FAILED 记录 | `extraction_service.py` |
 | 3 | 提取质量低 | 三阶段流水线：Structure → Atomize → Gate | `extraction_service.py`, `core/extraction.py` |
-| 4 | ES-DB 不一致被动修复 | `indexed_at` 追踪 + `es_sync_repair_sensor`（10 分钟）主动补索引 | `memory_service.py`, `dagster/sensors.py` |
+| 4 | ES-DB 不一致被动修复 | `indexed_at` 追踪 + `es_sync_repair` 定时任务（10 分钟）主动补索引 | `memory_service.py`, `scheduler/maintenance_tasks.py` |
 | 5 | 质量刷新全量加载内存 | `bulk_refresh_quality()` 分批处理（batch=200） | `memory_service.py` |
 | 6 | LLM 分级设计（dead config） | 彻底删除 `llm_small_model` 配置与 `model` 参数 | `config.py`, `providers/*.py` |
-| 7 | thread_created_sensor 死代码 | 删除 `ai_answer_job` + `thread_created_sensor` | `dagster/` |
+| 7 | thread_created_sensor 死代码 | 已随 Dagster 移除清理 | N/A |
 | 8 | bulk 刷新 N 次独立 embedding API 调用 | `embed_batch()` 批量嵌入 + `bulk_reindex()` 分 namespace 批量写 ES | `memory_service.py` |
 | 9 | 搜索排序未融合质量分 | `_simple_rank()` 归一化 rerank 分 + 加权融合：`0.7×语义 + 0.3×质量` | `search_service.py` |
 | 10 | 查询改写无条件触发 LLM | 词数 ≤ 4 跳过改写直接返回 | `search_service.py` |

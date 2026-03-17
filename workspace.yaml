@@ -1,7 +1,0 @@
-# Dagster workspace configuration
-# 指定 Definitions 入口模块，dagster dev 启动时自动加载
-# 启动命令: cd forum_memory_backend && dagster dev
-
-load_from:
-  - python_module:
-      module_name: forum_memory.dagster.definitions

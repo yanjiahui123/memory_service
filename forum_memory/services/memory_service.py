@@ -655,7 +655,7 @@ def reindex_unsynced_memories(session: Session, batch_size: int = 50) -> int:
     """Find ACTIVE memories with indexed_at IS NULL and re-index to ES.
 
     This is a repair function for DB-ES consistency gaps — called by a periodic
-    Dagster job to fix memories that failed ES indexing on creation/update.
+    scheduled task to fix memories that failed ES indexing on creation/update.
     Returns the number of successfully re-indexed memories.
     """
     stmt = (
