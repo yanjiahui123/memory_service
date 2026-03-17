@@ -1,6 +1,6 @@
 """Quality score computation for memories."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from forum_memory.models.enums import Authority, UserRole, ROLE_WEIGHT
 from forum_memory.config import get_settings
@@ -38,7 +38,7 @@ def _freshness(created_at: datetime) -> float:
     timezone-naive datetime.  We treat any naive datetime as UTC to avoid
     the 'can't subtract offset-naive and offset-aware datetimes' error.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
     days = (now - created_at).days

@@ -7,7 +7,7 @@ Uses ES hybrid search (BM25 + knn) for recall, falls back to SQL LIKE if ES unav
 import logging
 import re as re_mod
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
@@ -236,7 +236,7 @@ def _text_overlap(a: str, b: str) -> float:
 
 
 def _build_hits(session: Session, memories: list[Memory], env: str | None) -> list[MemorySearchHit]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     hits = []
     memory_ids = []
     for m in memories:

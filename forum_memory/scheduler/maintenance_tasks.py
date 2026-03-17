@@ -62,9 +62,9 @@ def repair_es_sync() -> None:
 
 def reconcile_comment_counts() -> None:
     """Fix drifted comment_count values against actual Comment rows."""
-    from forum_memory.services.thread_service import reconcile_comment_counts
+    from forum_memory.services.thread_service import reconcile_comment_counts as _reconcile
 
     with Session(engine) as session:
-        count = reconcile_comment_counts(session)
+        count = _reconcile(session)
     if count:
         logger.info("[scheduler:comment_count] Reconciled %d threads", count)

@@ -34,7 +34,7 @@ import logging
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -219,13 +219,13 @@ def _import_one_file(
             thread.status = ThreadStatus.RESOLVED
             thread.resolved_type = ResolvedType.HUMAN_RESOLVED
             thread.best_answer_id = best_answer_comment_id
-            thread.resolved_at = datetime.now(timezone.utc)
+            thread.resolved_at = datetime.now(tz=timezone(timedelta(hours=8)))
             was_resolved = True
 
         elif topic_closed:
             thread.status = ThreadStatus.TIMEOUT_CLOSED
             thread.resolved_type = ResolvedType.TIMEOUT
-            thread.timeout_at = datetime.now(timezone.utc)
+            thread.timeout_at = datetime.now(tz=timezone(timedelta(hours=8)))
             # Timeout-closed threads are also eligible for extraction
             was_resolved = True
 

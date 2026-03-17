@@ -138,7 +138,7 @@ def resolve_thread(session: Session, thread_id: UUID, best_answer_id: UUID | Non
     thread.status = ThreadStatus.RESOLVED
     thread.resolved_type = resolved_type
     thread.best_answer_id = best_answer_id
-    thread.resolved_at = datetime.now(timezone.utc)
+    thread.resolved_at = datetime.now(tz=timezone(timedelta(hours=8)))
 
     if best_answer_id:
         _mark_best_answer(session, best_answer_id)
@@ -162,7 +162,7 @@ def timeout_close_thread(session: Session, thread_id: UUID) -> Thread:
 
     thread.status = ThreadStatus.TIMEOUT_CLOSED
     thread.resolved_type = ResolvedType.TIMEOUT
-    thread.timeout_at = datetime.now(timezone.utc)
+    thread.timeout_at = datetime.now(tz=timezone(timedelta(hours=8)))
     _add_event(session, "thread.timeout_closed", "Thread", thread)
     session.commit()
     session.refresh(thread)
@@ -313,7 +313,7 @@ def delete_comment(session: Session, comment_id: UUID, user_id: UUID, is_board_a
         thread.best_answer_id = None
         logger.warning("Deleted comment %s was best_answer for thread %s — cleared reference", comment_id, thread.id)
     # Soft-delete: set deleted_at timestamp for audit trail
-    comment.deleted_at = datetime.now(timezone.utc)
+    comment.deleted_at = datetime.now(tz=timezone(timedelta(hours=8)))
     thread.comment_count = max(0, thread.comment_count - 1)
     session.commit()
     session.refresh(thread)
@@ -438,7 +438,7 @@ def _increment_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
 
 def batch_timeout_threads(session: Session, timeout_days: int = 7) -> int:
     """Batch timeout-close OPEN threads older than timeout_days. Returns count closed."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=timeout_days)
+    cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(days=timeout_days)
     stmt = (
         select(Thread)
         .where(Thread.status == ThreadStatus.OPEN)

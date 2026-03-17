@@ -19,7 +19,7 @@ def create_access_token(employee_id: str, user_id: UUID) -> dict:
     Returns {"access_token": str, "token_type": "bearer", "expires_in": int}.
     """
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     expire = now + timedelta(hours=settings.jwt_expire_hours)
     payload = {
         "sub": employee_id,
@@ -56,7 +56,7 @@ def decode_access_token(token: str) -> dict | None:
 
 def _sign_sso_jwt(ak: str, sk: str) -> str:
     """Create a short-lived JWT for authenticating with the SSO verification API."""
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    expires_at = datetime.now(tz=timezone(timedelta(hours=8))) + timedelta(minutes=10)
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {"accessKeyId": ak, "exp": expires_at}
     return jwt.encode(payload, sk, algorithm="HS256", headers=header)

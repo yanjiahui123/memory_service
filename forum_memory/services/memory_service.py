@@ -3,7 +3,7 @@
 import logging
 import time
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
@@ -103,7 +103,7 @@ def create_memory(session: Session, data: MemoryCreate) -> Memory:
         useful=0, not_useful=0, wrong=0, outdated=0,
         source_role=memory.source_role,
         retrieve_count=0,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(tz=timezone(timedelta(hours=8))),
         cite_count=0,
         resolved_citation_count=0,
     )
@@ -114,7 +114,7 @@ def create_memory(session: Session, data: MemoryCreate) -> Memory:
     # ES indexing: outside transaction — failure tracked via indexed_at
     index_name = _resolve_es_index(session, memory.namespace_id)
     if _index_to_es(memory, index_name=index_name):
-        memory.indexed_at = datetime.now(timezone.utc)
+        memory.indexed_at = datetime.now(tz=timezone(timedelta(hours=8)))
         session.commit()
     return memory
 
@@ -126,7 +126,7 @@ def update_memory(session: Session, memory_id: UUID, data: MemoryUpdate) -> Memo
     before = _snapshot(memory)
     for key, val in data.model_dump(exclude_unset=True).items():
         setattr(memory, key, val)
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     memory.indexed_at = None  # Mark ES as stale
     _add_log(session, memory, OperationType.UPDATE, reason="manual_update", before=before)
     session.commit()
@@ -134,7 +134,7 @@ def update_memory(session: Session, memory_id: UUID, data: MemoryUpdate) -> Memo
     # Re-index to ES
     index_name = _resolve_es_index(session, memory.namespace_id)
     if _index_to_es(memory, index_name=index_name):
-        memory.indexed_at = datetime.now(timezone.utc)
+        memory.indexed_at = datetime.now(tz=timezone(timedelta(hours=8)))
         session.commit()
     return memory
 
@@ -145,7 +145,7 @@ def delete_memory(session: Session, memory_id: UUID) -> bool:
         return False
     index_name = _resolve_es_index(session, memory.namespace_id)
     memory.status = MemoryStatus.DELETED
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     memory.indexed_at = None
     _add_log(session, memory, OperationType.DELETE, reason="deleted")
     session.commit()
@@ -161,7 +161,7 @@ def change_authority(session: Session, memory_id: UUID, authority: str, reason: 
     old = memory.authority
     memory.authority = Authority(authority)
     memory.pending_human_confirm = False
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     op = OperationType.PROMOTE if authority == "LOCKED" else OperationType.DEMOTE
     _add_log(session, memory, op, reason=reason or f"{old} -> {authority}", before=before)
     session.commit()
@@ -271,7 +271,7 @@ def refresh_quality(session: Session, memory_id: UUID) -> float:
         resolved_citation_count=memory.resolved_citation_count,
     )
     memory.quality_score = score
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
 
     # 自动质量告警：wrong 反馈超阈值时标记为待复核
     settings = get_settings()
@@ -314,7 +314,7 @@ def _apply_update(session: Session, result: AUDNResult,
             memory.tags = sorted(existing_tags | set(new_fact.tags))
         if new_fact.knowledge_type and not memory.knowledge_type:
             memory.knowledge_type = new_fact.knowledge_type
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     memory.indexed_at = None  # Mark ES as stale
     _add_log(session, memory, OperationType.UPDATE, reason=result.reason, before=before)
     session.commit()
@@ -322,7 +322,7 @@ def _apply_update(session: Session, result: AUDNResult,
     # Re-index to ES
     index_name = _resolve_es_index(session, memory.namespace_id)
     if _index_to_es(memory, index_name=index_name):
-        memory.indexed_at = datetime.now(timezone.utc)
+        memory.indexed_at = datetime.now(tz=timezone(timedelta(hours=8)))
         session.commit()
     return memory
 
@@ -348,7 +348,7 @@ def _apply_delete(session: Session, result: AUDNResult) -> None:
         return
     index_name = _resolve_es_index(session, memory.namespace_id)
     memory.status = MemoryStatus.DELETED
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     memory.indexed_at = None
     _add_log(session, memory, OperationType.DELETE, reason=result.reason)
     session.commit()
@@ -370,7 +370,7 @@ def restore_memory(session: Session, memory_id: UUID) -> Memory | None:
     before = _snapshot(memory)
     old_status = memory.status
     memory.status = MemoryStatus.ACTIVE
-    memory.updated_at = datetime.now(timezone.utc)
+    memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     memory.indexed_at = None  # Will be set after successful ES index
     _add_log(session, memory, OperationType.UPDATE, reason=f"{old_status} → ACTIVE (restored)", before=before)
     session.commit()
@@ -379,7 +379,7 @@ def restore_memory(session: Session, memory_id: UUID) -> Memory | None:
     # Immediately re-index to ES so the memory is searchable right away
     index_name = _resolve_es_index(session, memory.namespace_id)
     if _index_to_es(memory, index_name=index_name):
-        memory.indexed_at = datetime.now(timezone.utc)
+        memory.indexed_at = datetime.now(tz=timezone(timedelta(hours=8)))
         session.commit()
     else:
         logger.warning(
@@ -394,8 +394,7 @@ def restore_memory(session: Session, memory_id: UUID) -> Memory | None:
 
 def transition_cold_memories(session: Session, cold_days: int = 180) -> int:
     """Transition ACTIVE memories inactive for cold_days to COLD status."""
-    from datetime import timedelta
-    cutoff = datetime.now(timezone.utc) - timedelta(days=cold_days)
+    cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(days=cold_days)
     stmt = (
         select(Memory)
         .where(Memory.status == MemoryStatus.ACTIVE)
@@ -409,7 +408,7 @@ def transition_cold_memories(session: Session, cold_days: int = 180) -> int:
     memories = list(session.exec(stmt).all())
     # Collect ES cleanup info before modifying state
     es_cleanup = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     for m in memories:
         before = _snapshot(m)
         es_cleanup.append((m.id, _resolve_es_index(session, m.namespace_id)))
@@ -428,15 +427,14 @@ def transition_cold_memories(session: Session, cold_days: int = 180) -> int:
 
 def transition_archived_memories(session: Session, archive_days: int = 365) -> int:
     """Transition COLD memories inactive for archive_days to ARCHIVED status."""
-    from datetime import timedelta
-    cutoff = datetime.now(timezone.utc) - timedelta(days=archive_days)
+    cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(days=archive_days)
     stmt = (
         select(Memory)
         .where(Memory.status == MemoryStatus.COLD)
         .where(Memory.updated_at < cutoff)
     )
     memories = list(session.exec(stmt).all())
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     for m in memories:
         before = _snapshot(m)
         m.status = MemoryStatus.ARCHIVED
@@ -484,7 +482,7 @@ def _build_ns_index_cache(session: Session, changed: list[Memory]) -> dict:
 
 def _reindex_changed_memories(session: Session, changed: list[Memory], embeddings: list) -> None:
     """Group changed memories by index and bulk-reindex to ES."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     ns_cache = _build_ns_index_cache(session, changed)
     by_index: dict = {}
     for m, emb in zip(changed, embeddings):
@@ -669,7 +667,7 @@ def reindex_unsynced_memories(session: Session, batch_size: int = 50) -> int:
     if not memories:
         return 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
     succeeded = []
     for m in memories:
         index_name = _resolve_es_index(session, m.namespace_id)
