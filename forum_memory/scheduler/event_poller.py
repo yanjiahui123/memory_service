@@ -6,12 +6,15 @@ Replaces the Dagster source_extraction_sensor + extract_memories_job.
 """
 
 import logging
+from datetime import datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from forum_memory.database import engine
 from forum_memory.models.event import DomainEvent
+from forum_memory.models.extraction import ExtractionRecord, ExtractionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +73,41 @@ def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
         except ValueError:
             # Source not ready or already extracted — expected skip
             logger.debug(
-                "[scheduler:extraction_poller] Skipped %s/%s: %s",
-                source_type, source_id, "not ready or already extracted",
+                "[scheduler:extraction_poller] Skipped %s/%s: not ready or already extracted",
+                source_type, source_id,
+            )
+        except IntegrityError:
+            # Unique constraint violation: an IN_PROGRESS record already exists.
+            # Must rollback before the session can be reused.
+            session.rollback()
+            if _is_extraction_stale(session, source_type, source_id):
+                # Stale IN_PROGRESS (>30 min) — likely a crashed run.
+                # Don't mark processed; next poll will clean up and retry.
+                logger.warning(
+                    "[scheduler:extraction_poller] Stale IN_PROGRESS for %s/%s, will retry next poll",
+                    source_type, source_id,
+                )
+                return
+            logger.info(
+                "[scheduler:extraction_poller] Extraction already in progress for %s/%s, skipping",
+                source_type, source_id,
             )
 
         _mark_event_processed(session, event_id)
+
+
+def _is_extraction_stale(
+    session: Session, source_type: str, source_id: UUID,
+) -> bool:
+    """Check if an IN_PROGRESS extraction record is stale (>30 min)."""
+    stale_cutoff = datetime.now() - timedelta(minutes=30)
+    stmt = select(ExtractionRecord).where(
+        ExtractionRecord.source_type == source_type,
+        ExtractionRecord.source_id == source_id,
+        ExtractionRecord.status == ExtractionStatus.IN_PROGRESS,
+        ExtractionRecord.created_at < stale_cutoff,
+    )
+    return session.exec(stmt).first() is not None
 
 
 def _mark_processed(event_id: UUID) -> None:
