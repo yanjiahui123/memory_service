@@ -100,8 +100,9 @@ def list_contradictions(
     namespace_id: UUID | None = None,
     page: int = 1,
     size: int = 20,
+    namespace_ids: list[UUID] | None = None,
 ) -> tuple[list[MemoryRelation], int]:
-    """List CONTRADICTS relations, optionally filtered by namespace."""
+    """List CONTRADICTS relations, optionally filtered by namespace(s)."""
     stmt = select(MemoryRelation).where(
         MemoryRelation.relation_type == RelationType.CONTRADICTS
     )
@@ -109,6 +110,10 @@ def list_contradictions(
         stmt = stmt.join(
             Memory, MemoryRelation.source_memory_id == Memory.id
         ).where(Memory.namespace_id == namespace_id)
+    elif namespace_ids:
+        stmt = stmt.join(
+            Memory, MemoryRelation.source_memory_id == Memory.id
+        ).where(Memory.namespace_id.in_(namespace_ids))
     all_items = list(session.exec(stmt).all())
     total = len(all_items)
     paginated = list(session.exec(stmt.offset((page - 1) * size).limit(size)).all())

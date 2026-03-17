@@ -147,6 +147,23 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_any_admin(user: User = Depends(get_current_user)) -> User:
+    """要求当前用户是超级管理员或板块管理员，否则 403。"""
+    if user.role not in (SystemRole.SUPER_ADMIN, SystemRole.BOARD_ADMIN):
+        raise HTTPException(403, "需要管理员权限")
+    return user
+
+
+def get_managed_namespace_ids(session: Session, user: User) -> list[UUID]:
+    """返回 board_admin 管理的板块 ID 列表。super_admin 返回空列表（表示不受限）。"""
+    if user.role == SystemRole.SUPER_ADMIN:
+        return []
+    stmt = select(NamespaceModerator.namespace_id).where(
+        NamespaceModerator.user_id == user.id
+    )
+    return list(session.exec(stmt).all())
+
+
 def check_board_permission(
     ns_id: UUID,
     session: Session,

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
-from forum_memory.api.deps import get_db, get_current_user, require_admin, check_board_permission
+from forum_memory.api.deps import get_db, get_current_user, check_board_permission
 from forum_memory.models.thread import Thread
 from forum_memory.models.enums import ThreadStatus
 from forum_memory.models.user import User
@@ -130,7 +130,7 @@ def update_dictionary(
     return ns
 
 
-# ── Moderator management (super admin only) ──────────────────
+# ── Moderator management ──────────────────────────────────────
 
 @router.get("/{ns_id}/moderators", response_model=list[UserRead])
 def list_moderators(
@@ -153,9 +153,10 @@ def add_moderator(
     ns_id: UUID,
     data: ModeratorAdd,
     session: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
 ):
-    """仅超级管理员可指派板块管理员。通过工号查找用户，不存在则自动创建。"""
+    """超级管理员或该板块管理员可指派板块管理员。通过工号查找用户，不存在则自动创建。"""
+    check_board_permission(ns_id, session, user)
     ns = namespace_service.get_namespace(session, ns_id)
     if not ns:
         raise HTTPException(404, "板块不存在")
@@ -213,9 +214,10 @@ def remove_moderator(
     ns_id: UUID,
     user_id: UUID,
     session: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
 ):
-    """仅超级管理员可移除板块管理员。"""
+    """超级管理员或该板块管理员可移除板块管理员。"""
+    check_board_permission(ns_id, session, user)
     stmt = select(NamespaceModerator).where(
         NamespaceModerator.user_id == user_id,
         NamespaceModerator.namespace_id == ns_id,

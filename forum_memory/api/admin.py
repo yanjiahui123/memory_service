@@ -15,7 +15,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from forum_memory.api.deps import check_board_permission, get_current_user, get_db, require_admin
+from forum_memory.api.deps import (
+    check_board_permission, get_current_user, get_db, get_managed_namespace_ids,
+    require_admin, require_any_admin,
+)
 from forum_memory.models.enums import SystemRole, Authority
 from forum_memory.models.memory import Memory
 from forum_memory.models.namespace import Namespace
@@ -278,6 +281,19 @@ def get_import_job(
     )
 
 
+def _apply_namespace_filter(stmt, namespace_id, session, user):
+    """为查询语句追加板块过滤：指定 namespace_id 或 board_admin 自动限制到管理的板块。"""
+    if namespace_id:
+        stmt = stmt.where(Memory.namespace_id == namespace_id)
+    elif user.role == SystemRole.BOARD_ADMIN:
+        ns_ids = get_managed_namespace_ids(session, user)
+        if ns_ids:
+            stmt = stmt.where(Memory.namespace_id.in_(ns_ids))
+        else:
+            stmt = stmt.where(Memory.namespace_id.is_(None))
+    return stmt
+
+
 # ─── Quality Alerts ──────────────────────────────────────────────────────────
 
 class QualityAlertItem(BaseModel):
@@ -306,19 +322,21 @@ def list_quality_alerts(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     session: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    user: User = Depends(require_any_admin),
 ) -> QualityAlertList:
     """返回 pending_human_confirm=True 的记忆（质量告警列表），按 wrong_count 降序。
 
     可按板块过滤。超级管理员或板块管理员均可访问。
     """
+    if namespace_id:
+        check_board_permission(namespace_id, session, user)
+
     stmt = (
         select(Memory)
         .where(Memory.pending_human_confirm.is_(True))
         .order_by(Memory.wrong_count.desc(), Memory.updated_at.desc())
     )
-    if namespace_id:
-        stmt = stmt.where(Memory.namespace_id == namespace_id)
+    stmt = _apply_namespace_filter(stmt, namespace_id, session, user)
 
     total = len(session.exec(stmt).all())
     items = list(session.exec(stmt.offset((page - 1) * size).limit(size)).all())
@@ -329,12 +347,13 @@ def list_quality_alerts(
 def dismiss_quality_alert(
     memory_id: UUID,
     session: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    user: User = Depends(require_any_admin),
 ) -> QualityAlertItem:
     """管理员复核后关闭质量告警（清除 pending_human_confirm 标记）。"""
     memory = session.get(Memory, memory_id)
     if not memory:
         raise HTTPException(404, "记忆不存在")
+    check_board_permission(memory.namespace_id, session, user)
     memory.pending_human_confirm = False
     session.commit()
     session.refresh(memory)
@@ -349,13 +368,24 @@ def list_contradictions(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     session: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    user: User = Depends(require_any_admin),
 ):
     """List all CONTRADICTS memory pairs for admin review."""
+    if namespace_id:
+        check_board_permission(namespace_id, session, user)
+
     from forum_memory.services import relation_service
     from forum_memory.schemas.relation import RelationRead
 
-    items, total = relation_service.list_contradictions(session, namespace_id, page, size)
+    ns_ids = None
+    if not namespace_id and user.role == SystemRole.BOARD_ADMIN:
+        ns_ids = get_managed_namespace_ids(session, user)
+        if not ns_ids:
+            return {"items": [], "total": 0}
+
+    items, total = relation_service.list_contradictions(
+        session, namespace_id, page, size, namespace_ids=ns_ids,
+    )
     return {"items": [RelationRead.model_validate(r) for r in items], "total": total}
 
 
@@ -365,10 +395,18 @@ def resolve_contradiction_endpoint(
     relation_id: UUID,
     body: ContradictionResolveRequest,
     session: Session = Depends(get_db),
-    admin_user: User = Depends(require_admin),
+    admin_user: User = Depends(require_any_admin),
 ):
     """Resolve a CONTRADICTS relation: keep_source, keep_target, or keep_both."""
+    from forum_memory.models.memory_relation import MemoryRelation
     from forum_memory.services import relation_service
+
+    rel = session.get(MemoryRelation, relation_id)
+    if not rel:
+        raise HTTPException(404, "关系不存在")
+    source_mem = session.get(Memory, rel.source_memory_id)
+    if source_mem:
+        check_board_permission(source_mem.namespace_id, session, admin_user)
 
     success, detail = relation_service.resolve_contradiction(
         session=session,
