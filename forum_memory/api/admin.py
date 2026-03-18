@@ -440,24 +440,20 @@ class AuditLogItem(BaseModel):
 @router.get("/audit-logs")
 def list_audit_logs(
     memory_id: UUID | None = Query(None),
+    namespace_id: UUID | None = Query(None),
     operation: str | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
     session: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    user: User = Depends(require_any_admin),
 ):
-    """查询操作审计日志，支持按记忆ID和操作类型过滤。"""
-    from sqlmodel import func
+    """查询操作审计日志，支持按记忆ID、板块和操作类型过滤。
 
-    stmt = select(OperationLog).order_by(OperationLog.created_at.desc())
-    count_stmt = select(func.count()).select_from(OperationLog)
-
-    if memory_id:
-        stmt = stmt.where(OperationLog.memory_id == memory_id)
-        count_stmt = count_stmt.where(OperationLog.memory_id == memory_id)
-    if operation:
-        stmt = stmt.where(OperationLog.operation == operation)
-        count_stmt = count_stmt.where(OperationLog.operation == operation)
+    板块管理员仅可查看其管理板块内的日志。
+    """
+    stmt, count_stmt = _build_audit_log_query(
+        session, user, memory_id, namespace_id, operation,
+    )
 
     total = session.exec(count_stmt).one()
     items = list(session.exec(stmt.offset((page - 1) * size).limit(size)).all())
@@ -465,3 +461,37 @@ def list_audit_logs(
     from fastapi.responses import JSONResponse
     data = [AuditLogItem.model_validate(item).model_dump(mode="json") for item in items]
     return JSONResponse(content=data, headers={"X-Total-Count": str(total)})
+
+
+def _build_audit_log_query(
+    session: Session,
+    user: User,
+    memory_id: UUID | None,
+    namespace_id: UUID | None,
+    operation: str | None,
+):
+    """Construct audit-log SELECT + COUNT respecting board_admin scope."""
+    from sqlmodel import func
+
+    stmt = select(OperationLog).order_by(OperationLog.created_at.desc())
+    count_stmt = select(func.count()).select_from(OperationLog)
+
+    # board_admin: restrict to memories belonging to managed namespaces
+    if user.role == SystemRole.BOARD_ADMIN:
+        ns_ids = get_managed_namespace_ids(session, user)
+        mem_sub = select(Memory.id).where(Memory.namespace_id.in_(ns_ids))
+        stmt = stmt.where(OperationLog.memory_id.in_(mem_sub))
+        count_stmt = count_stmt.where(OperationLog.memory_id.in_(mem_sub))
+
+    if namespace_id:
+        ns_sub = select(Memory.id).where(Memory.namespace_id == namespace_id)
+        stmt = stmt.where(OperationLog.memory_id.in_(ns_sub))
+        count_stmt = count_stmt.where(OperationLog.memory_id.in_(ns_sub))
+    if memory_id:
+        stmt = stmt.where(OperationLog.memory_id == memory_id)
+        count_stmt = count_stmt.where(OperationLog.memory_id == memory_id)
+    if operation:
+        stmt = stmt.where(OperationLog.operation == operation)
+        count_stmt = count_stmt.where(OperationLog.operation == operation)
+
+    return stmt, count_stmt

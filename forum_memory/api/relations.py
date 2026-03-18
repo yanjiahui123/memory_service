@@ -56,8 +56,16 @@ def create_relation(
 def delete_relation(
     relation_id: UUID,
     session: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    """Delete a relation."""
+    """Delete a relation (requires board permission on source memory's namespace)."""
+    from forum_memory.models.memory_relation import MemoryRelation
+
+    rel = session.get(MemoryRelation, relation_id)
+    if not rel:
+        raise HTTPException(404, "Relation not found")
+    source_mem = memory_service.get_memory(session, rel.source_memory_id)
+    if source_mem:
+        check_board_permission(source_mem.namespace_id, session, user)
     if not relation_service.delete_relation(session, relation_id):
         raise HTTPException(404, "Relation not found")
