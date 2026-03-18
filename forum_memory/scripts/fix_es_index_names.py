@@ -26,7 +26,7 @@ ES_SAFE_PATTERN = re.compile(r'^[a-z0-9_\-\.]+$')
 def main():
     with Session(engine) as session:
         namespaces = list(session.exec(
-            select(Namespace).where(Namespace.is_active == True)
+            select(Namespace).where(Namespace.is_active.is_(True))
         ).all())
 
         fixed = 0

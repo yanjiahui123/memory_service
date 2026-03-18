@@ -70,10 +70,8 @@ def _parse_filename(filename: str) -> tuple[str, str | None]:
     Falls back to stem as title if pattern doesn't match.
     """
     stem = Path(filename).stem
-    # Remove trailing _topic suffix
     if stem.endswith("_topic"):
         stem = stem[:-6]
-    # Extract and strip trailing numeric topic_id
     m = re.match(r"^(.+?)_(\d+)$", stem)
     if m:
         raw_desc, topic_id = m.group(1), m.group(2)
@@ -89,11 +87,9 @@ def _get_or_create_user(session: Session, username: str) -> User:
     if existing:
         return existing
 
-    # Deterministic employee_id: 8-digit hash of username, prefixed with 'I'
     h = int(hashlib.sha1(username.encode()).hexdigest(), 16) % 10_000_000
     employee_id = f"I{h:07d}"
 
-    # Handle rare employee_id collision
     if session.exec(select(User).where(User.employee_id == employee_id)).first():
         employee_id = f"J{h:07d}"
 
@@ -106,15 +102,14 @@ def _get_or_create_user(session: Session, username: str) -> User:
         is_active=True,
     )
     session.add(user)
-    session.flush()  # get id without full commit (caller will commit)
+    session.flush()
     return user
 
 
 def _already_imported(session: Session, namespace_id: UUID, topic_id: str) -> bool:
     """Check if a topic was already imported by inspecting Thread.tags."""
     tag = _src_tag(topic_id)
-    # JSON contains query using LIKE for simplicity (works on PG json text cast)
-    from sqlalchemy import cast, String, func
+    from sqlalchemy import String, func
     stmt = (
         select(Thread)
         .where(Thread.namespace_id == namespace_id)
@@ -122,6 +117,69 @@ def _already_imported(session: Session, namespace_id: UUID, topic_id: str) -> bo
         .where(func.cast(Thread.tags, String).contains(tag))
     )
     return session.exec(stmt).first() is not None
+
+
+# ─── Thread creation helpers ───────────────────────────────────────────────
+
+def _create_comments(session: Session, thread: Thread, reply_posts: list[dict]) -> tuple[UUID | None, bool]:
+    """Create comments for a thread. Returns (best_answer_comment_id, topic_closed)."""
+    best_answer_url = None  # will be set from thread data if needed
+    best_answer_id: UUID | None = None
+    topic_closed = False
+
+    for reply in reply_posts:
+        reply_user = _get_or_create_user(session, reply.get("user_name") or "unknown")
+        comment = Comment(
+            thread_id=thread.id,
+            author_id=reply_user.id,
+            content=reply.get("text") or "",
+            is_ai=False,
+            author_role="commenter",
+        )
+        session.add(comment)
+        session.flush()
+        thread.comment_count += 1
+
+        if _is_best_answer(reply, best_answer_url, best_answer_id):
+            best_answer_id = comment.id
+        if reply.get("topic_closed", False):
+            topic_closed = True
+
+    return best_answer_id, topic_closed
+
+
+def _is_best_answer(reply: dict, best_answer_url: str | None, current_best: UUID | None) -> bool:
+    """Determine if a reply is the best answer."""
+    post_url = reply.get("post_url") or ""
+    is_solution = bool(reply.get("is_solution", False))
+    if best_answer_url and post_url and post_url == best_answer_url:
+        return True
+    if not best_answer_url and is_solution and current_best is None:
+        return True
+    return False
+
+
+def _resolve_thread(session: Session, thread: Thread, best_answer_id: UUID | None, topic_closed: bool) -> bool:
+    """Apply resolution status to thread. Returns True if resolved."""
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
+
+    if best_answer_id:
+        best_comment = session.get(Comment, best_answer_id)
+        if best_comment:
+            best_comment.is_best_answer = True
+        thread.status = ThreadStatus.RESOLVED
+        thread.resolved_type = ResolvedType.HUMAN_RESOLVED
+        thread.best_answer_id = best_answer_id
+        thread.resolved_at = now
+        return True
+
+    if topic_closed:
+        thread.status = ThreadStatus.TIMEOUT_CLOSED
+        thread.resolved_type = ResolvedType.TIMEOUT
+        thread.timeout_at = now
+        return True
+
+    return False
 
 
 # ─── Core import logic ──────────────────────────────────────────────────────
@@ -134,115 +192,69 @@ def _import_one_file(
     """Import a single JSON topic file.
 
     Returns (thread_id | None, was_resolved, status_msg).
-    Runs in a dedicated DB session so it's safe to call from multiple threads.
     """
     try:
         data = json.loads(filepath.read_text(encoding="utf-8"))
-    except Exception as e:
-        return None, False, f"JSON parse error: {e}"
+    except Exception as exc:
+        return None, False, f"JSON parse error: {exc}"
 
     title, topic_id = _parse_filename(filepath.name)
-    question = data.get("question") or ""
-    topic_user = data.get("topic_user_name") or "unknown"
-    best_answer_url = data.get("best_answer_url") or None
     reply_posts = data.get("reply_posts") or []
 
     if dry_run:
-        resolved_hint = "✓ has_solution" if best_answer_url or any(r.get("is_solution") for r in reply_posts) else "○ open"
-        return None, False, f"[DRY RUN] '{title}' — {len(reply_posts)} replies  {resolved_hint}"
+        return _dry_run_result(title, data, reply_posts)
 
+    return _persist_topic(filepath, namespace_id, title, topic_id, data, reply_posts)
+
+
+def _dry_run_result(title: str, data: dict, reply_posts: list) -> tuple[None, bool, str]:
+    """Build dry-run status message without writing to DB."""
+    has_solution = data.get("best_answer_url") or any(r.get("is_solution") for r in reply_posts)
+    hint = "✓ has_solution" if has_solution else "○ open"
+    return None, False, f"[DRY RUN] '{title}' — {len(reply_posts)} replies  {hint}"
+
+
+def _persist_topic(
+    filepath: Path,
+    namespace_id: UUID,
+    title: str,
+    topic_id: str | None,
+    data: dict,
+    reply_posts: list[dict],
+) -> tuple[UUID | None, bool, str]:
+    """Write thread + comments to DB. Returns (thread_id, was_resolved, msg)."""
     with Session(engine) as session:
-        # ── Deduplication ────────────────────────────────────────────
         if topic_id and _already_imported(session, namespace_id, topic_id):
             return None, False, f"skip (already imported topic_id={topic_id})"
 
-        # ── Create users ─────────────────────────────────────────────
-        author = _get_or_create_user(session, topic_user)
-
-        # Determine thread final tags (include src tag for deduplication)
+        author = _get_or_create_user(session, data.get("topic_user_name") or "unknown")
         thread_tags = [_src_tag(topic_id)] if topic_id else []
 
-        # ── Create thread directly (bypassing service to avoid AI auto-answer) ─
         thread = Thread(
             namespace_id=namespace_id,
             author_id=author.id,
             title=title,
-            content=question,
+            content=data.get("question") or "",
             status=ThreadStatus.OPEN,
             tags=thread_tags if thread_tags else None,
         )
         session.add(thread)
-        session.flush()  # get thread.id
+        session.flush()
 
-        # ── Create comments / replies ─────────────────────────────────
-        best_answer_comment_id: UUID | None = None
-        topic_closed = False
-
-        for reply in reply_posts:
-            reply_user_name = reply.get("user_name") or "unknown"
-            reply_user = _get_or_create_user(session, reply_user_name)
-            text = reply.get("text") or ""
-            post_url = reply.get("post_url") or ""
-            is_solution = bool(reply.get("is_solution", False))
-
-            comment = Comment(
-                thread_id=thread.id,
-                author_id=reply_user.id,
-                content=text,
-                is_ai=False,
-                author_role="commenter",
-            )
-            session.add(comment)
-            session.flush()  # get comment.id
-
-            thread.comment_count += 1
-
-            # Identify best answer:
-            # Priority 1 — match post_url to best_answer_url
-            # Priority 2 — is_solution flag (when no URL provided)
-            if best_answer_url and post_url and post_url == best_answer_url:
-                best_answer_comment_id = comment.id
-            elif not best_answer_url and is_solution and best_answer_comment_id is None:
-                best_answer_comment_id = comment.id
-
-            if reply.get("topic_closed", False):
-                topic_closed = True
-
-        # ── Resolve / close thread ────────────────────────────────────
-        was_resolved = False
-
-        if best_answer_comment_id:
-            best_comment = session.get(Comment, best_answer_comment_id)
-            if best_comment:
-                best_comment.is_best_answer = True
-
-            thread.status = ThreadStatus.RESOLVED
-            thread.resolved_type = ResolvedType.HUMAN_RESOLVED
-            thread.best_answer_id = best_answer_comment_id
-            thread.resolved_at = datetime.now(tz=timezone(timedelta(hours=8)))
-            was_resolved = True
-
-        elif topic_closed:
-            thread.status = ThreadStatus.TIMEOUT_CLOSED
-            thread.resolved_type = ResolvedType.TIMEOUT
-            thread.timeout_at = datetime.now(tz=timezone(timedelta(hours=8)))
-            # Timeout-closed threads are also eligible for extraction
-            was_resolved = True
+        best_answer_id, topic_closed = _create_comments(session, thread, reply_posts)
+        was_resolved = _resolve_thread(session, thread, best_answer_id, topic_closed)
 
         session.commit()
-        logger.info(
-            "Imported %-60s  replies=%-3d  %s",
-            f"'{title}'",
-            len(reply_posts),
-            "RESOLVED" if was_resolved else "OPEN",
-        )
+        logger.info("Imported %-60s  replies=%-3d  %s",
+                    f"'{title}'", len(reply_posts),
+                    "RESOLVED" if was_resolved else "OPEN")
         return thread.id, was_resolved, "ok"
 
 
 # ─── Extraction worker ───────────────────────────────────────────────────────
 
 def _extract_worker(thread_id: UUID) -> tuple[UUID, int, str]:
-    """Run extraction pipeline for one thread. Returns (thread_id, n_memories, status)."""
+    """Run extraction pipeline for one thread."""
     import forum_memory.adapters  # noqa: F401  — ensure adapters registered
     from forum_memory.services.extraction_service import run_extraction
 
@@ -250,38 +262,17 @@ def _extract_worker(thread_id: UUID) -> tuple[UUID, int, str]:
         with Session(engine) as session:
             mids = run_extraction(session, "thread", thread_id)
             return thread_id, len(mids), "ok"
-    except Exception as e:
-        logger.warning("Extraction failed for thread %s: %s", thread_id, e)
-        return thread_id, 0, f"error: {e}"
+    except Exception as exc:
+        logger.warning("Extraction failed for thread %s: %s", thread_id, exc)
+        return thread_id, 0, f"error: {exc}"
 
 
-# ─── Main orchestrator ───────────────────────────────────────────────────────
+# ─── Phase runners ───────────────────────────────────────────────────────────
 
-def run_import(
-    dir_path: Path,
-    namespace_id: UUID,
-    workers: int = 4,
-    skip_extraction: bool = False,
-    dry_run: bool = False,
-) -> dict:
-    """Orchestrate batch import.
-
-    Phase 1 (sequential): parse & write threads/comments to DB.
-    Phase 2 (concurrent): run extraction pipeline for resolved threads.
-    """
-    files = sorted(dir_path.glob("*.json"))
-    if not files:
-        logger.warning("No JSON files found in %s", dir_path)
-        return {"total": 0, "imported": 0, "skipped": 0, "failed": 0,
-                "resolved": 0, "extracted": 0, "extract_failed": 0}
-
-    logger.info("Found %d JSON files  namespace=%s  workers=%d%s",
-                len(files), namespace_id, workers,
-                "  [DRY RUN]" if dry_run else "")
-
-    # ── Phase 1: Import threads ───────────────────────────────────────────────
+def _run_import_phase(files: list[Path], namespace_id: UUID, dry_run: bool) -> tuple[int, int, int, list[UUID]]:
+    """Phase 1: import threads sequentially. Returns (imported, skipped, failed, resolved_ids)."""
     imported = skipped = failed = 0
-    resolved_thread_ids: list[UUID] = []
+    resolved_ids: list[UUID] = []
 
     for f in files:
         thread_id, was_resolved, msg = _import_one_file(f, namespace_id, dry_run)
@@ -298,44 +289,65 @@ def run_import(
         else:
             imported += 1
             if was_resolved:
-                resolved_thread_ids.append(thread_id)
+                resolved_ids.append(thread_id)
 
-    logger.info(
-        "Phase 1 done — imported=%d  skipped=%d  failed=%d  to_extract=%d",
-        imported, skipped, failed, len(resolved_thread_ids),
-    )
+    logger.info("Phase 1 done — imported=%d  skipped=%d  failed=%d  to_extract=%d",
+                imported, skipped, failed, len(resolved_ids))
+    return imported, skipped, failed, resolved_ids
 
-    # ── Phase 2: Concurrent extraction ───────────────────────────────────────
+
+def _run_extraction_phase(resolved_ids: list[UUID], workers: int) -> tuple[int, int]:
+    """Phase 2: concurrent extraction. Returns (extracted, failed)."""
+    actual_workers = min(workers, len(resolved_ids))
+    logger.info("Phase 2 — extracting memories for %d threads  (workers=%d)",
+                len(resolved_ids), actual_workers)
+
     extracted = extract_failed = 0
+    with ThreadPoolExecutor(max_workers=actual_workers, thread_name_prefix="extractor") as pool:
+        futures = {pool.submit(_extract_worker, tid): tid for tid in resolved_ids}
+        for fut in as_completed(futures):
+            tid, n_mems, status = fut.result()
+            if status == "ok":
+                logger.info("  ✓ thread=%s  memories=%d", tid, n_mems)
+                extracted += 1
+            else:
+                logger.warning("  ✗ thread=%s  %s", tid, status)
+                extract_failed += 1
 
-    if not skip_extraction and not dry_run and resolved_thread_ids:
-        actual_workers = min(workers, len(resolved_thread_ids))
-        logger.info(
-            "Phase 2 — extracting memories for %d threads  (workers=%d)",
-            len(resolved_thread_ids), actual_workers,
-        )
-        with ThreadPoolExecutor(max_workers=actual_workers, thread_name_prefix="extractor") as pool:
-            futures = {pool.submit(_extract_worker, tid): tid for tid in resolved_thread_ids}
-            for fut in as_completed(futures):
-                tid, n_mems, status = fut.result()
-                if status == "ok":
-                    logger.info("  ✓ thread=%s  memories=%d", tid, n_mems)
-                    extracted += 1
-                else:
-                    logger.warning("  ✗ thread=%s  %s", tid, status)
-                    extract_failed += 1
+    logger.info("Phase 2 done — extracted=%d  failed=%d", extracted, extract_failed)
+    return extracted, extract_failed
 
-        logger.info(
-            "Phase 2 done — extracted=%d  failed=%d",
-            extracted, extract_failed,
-        )
+
+def run_import(
+    dir_path: Path,
+    namespace_id: UUID,
+    workers: int = 4,
+    skip_extraction: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """Orchestrate batch import: parse threads, then extract memories."""
+    files = sorted(dir_path.glob("*.json"))
+    if not files:
+        logger.warning("No JSON files found in %s", dir_path)
+        return {"total": 0, "imported": 0, "skipped": 0, "failed": 0,
+                "resolved": 0, "extracted": 0, "extract_failed": 0}
+
+    logger.info("Found %d JSON files  namespace=%s  workers=%d%s",
+                len(files), namespace_id, workers,
+                "  [DRY RUN]" if dry_run else "")
+
+    imported, skipped, failed, resolved_ids = _run_import_phase(files, namespace_id, dry_run)
+
+    extracted = extract_failed = 0
+    if not skip_extraction and not dry_run and resolved_ids:
+        extracted, extract_failed = _run_extraction_phase(resolved_ids, workers)
 
     return {
         "total": len(files),
         "imported": imported,
         "skipped": skipped,
         "failed": failed,
-        "resolved": len(resolved_thread_ids),
+        "resolved": len(resolved_ids),
         "extracted": extracted,
         "extract_failed": extract_failed,
     }
@@ -343,11 +355,7 @@ def run_import(
 
 # ─── CLI entry point ─────────────────────────────────────────────────────────
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="批量导入历史帖子 JSON 文件到 Forum Memory",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+_CLI_EPILOG = """
 示例:
   # 导入全部 JSON，4 线程并发提取记忆
   python -m forum_memory.scripts.import_topics \\
@@ -365,7 +373,15 @@ def main() -> None:
       --dir ./history_topics \\
       --namespace-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \\
       --dry-run
-""",
+"""
+
+
+def _parse_cli_args() -> argparse.Namespace:
+    """Parse and validate CLI arguments."""
+    parser = argparse.ArgumentParser(
+        description="批量导入历史帖子 JSON 文件到 Forum Memory",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_CLI_EPILOG,
     )
     parser.add_argument("--dir", required=True, metavar="PATH", help="JSON 文件所在目录")
     parser.add_argument("--namespace-id", required=True, metavar="UUID", help="目标板块 UUID")
@@ -375,22 +391,22 @@ def main() -> None:
                         help="跳过记忆提取（仅导入帖子和回复）")
     parser.add_argument("--dry-run", action="store_true",
                         help="演练模式：解析文件但不写入数据库")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    # Validate directory
+
+def _validate_inputs(args: argparse.Namespace) -> tuple[Path, UUID]:
+    """Validate directory and namespace UUID from CLI args."""
     dir_path = Path(args.dir)
     if not dir_path.is_dir():
         print(f"错误: 目录不存在: {dir_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Validate namespace UUID
     try:
         namespace_id = UUID(args.namespace_id)
     except ValueError:
         print("错误: --namespace-id 格式不正确，应为标准 UUID", file=sys.stderr)
         sys.exit(1)
 
-    # Verify namespace exists (skip in dry-run to avoid needing DB)
     if not args.dry_run:
         with Session(engine) as session:
             ns = session.get(Namespace, namespace_id)
@@ -399,7 +415,32 @@ def main() -> None:
                 sys.exit(1)
             logger.info("目标板块: %s (%s)", ns.display_name or ns.name, ns.id)
 
-    # Run import
+    return dir_path, namespace_id
+
+
+def _print_summary(stats: dict) -> None:
+    """Print formatted import summary."""
+    print("\n" + "═" * 40)
+    print("  导入结果汇总")
+    print("═" * 40)
+    labels = {
+        "total": "JSON 文件总数",
+        "imported": "成功导入",
+        "skipped": "跳过 (已导入)",
+        "failed": "导入失败",
+        "resolved": "已解决帖子",
+        "extracted": "记忆提取成功",
+        "extract_failed": "记忆提取失败",
+    }
+    for key, label in labels.items():
+        print(f"  {label:<14}  {stats.get(key, 0)}")
+    print("═" * 40)
+
+
+def main() -> None:
+    args = _parse_cli_args()
+    dir_path, namespace_id = _validate_inputs(args)
+
     stats = run_import(
         dir_path=dir_path,
         namespace_id=namespace_id,
@@ -407,23 +448,7 @@ def main() -> None:
         skip_extraction=args.skip_extraction,
         dry_run=args.dry_run,
     )
-
-    # Print summary
-    print("\n" + "═" * 40)
-    print("  导入结果汇总")
-    print("═" * 40)
-    labels = {
-        "total":          "JSON 文件总数",
-        "imported":       "成功导入",
-        "skipped":        "跳过 (已导入)",
-        "failed":         "导入失败",
-        "resolved":       "已解决帖子",
-        "extracted":      "记忆提取成功",
-        "extract_failed": "记忆提取失败",
-    }
-    for key, label in labels.items():
-        print(f"  {label:<14}  {stats.get(key, 0)}")
-    print("═" * 40)
+    _print_summary(stats)
 
 
 if __name__ == "__main__":
