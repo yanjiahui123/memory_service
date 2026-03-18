@@ -263,7 +263,7 @@ class ImportJobStatusResponse(BaseModel):
 @router.get("/import-jobs/{job_id}", response_model=ImportJobStatusResponse)
 def get_import_job(
     job_id: str,
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(require_any_admin),
 ) -> ImportJobStatusResponse:
     """查询批量导入任务的进度与结果。"""
     with _import_jobs_lock:
