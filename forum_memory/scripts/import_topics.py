@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import re
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -376,8 +375,8 @@ _CLI_EPILOG = """
 """
 
 
-def _parse_cli_args() -> argparse.Namespace:
-    """Parse and validate CLI arguments."""
+def _parse_cli_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
+    """Parse and validate CLI arguments. Returns (parser, args)."""
     parser = argparse.ArgumentParser(
         description="批量导入历史帖子 JSON 文件到 Forum Memory",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -391,28 +390,25 @@ def _parse_cli_args() -> argparse.Namespace:
                         help="跳过记忆提取（仅导入帖子和回复）")
     parser.add_argument("--dry-run", action="store_true",
                         help="演练模式：解析文件但不写入数据库")
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
-def _validate_inputs(args: argparse.Namespace) -> tuple[Path, UUID]:
+def _validate_inputs(parser: argparse.ArgumentParser, args: argparse.Namespace) -> tuple[Path, UUID]:
     """Validate directory and namespace UUID from CLI args."""
     dir_path = Path(args.dir)
     if not dir_path.is_dir():
-        print(f"错误: 目录不存在: {dir_path}", file=sys.stderr)
-        sys.exit(1)
+        parser.error(f"目录不存在: {dir_path}")
 
     try:
         namespace_id = UUID(args.namespace_id)
     except ValueError:
-        print("错误: --namespace-id 格式不正确，应为标准 UUID", file=sys.stderr)
-        sys.exit(1)
+        parser.error("--namespace-id 格式不正确，应为标准 UUID")
 
     if not args.dry_run:
         with Session(engine) as session:
             ns = session.get(Namespace, namespace_id)
             if not ns:
-                print(f"错误: 板块 {namespace_id} 不存在，请先创建板块", file=sys.stderr)
-                sys.exit(1)
+                parser.error(f"板块 {namespace_id} 不存在，请先创建板块")
             logger.info("目标板块: %s (%s)", ns.display_name or ns.name, ns.id)
 
     return dir_path, namespace_id
@@ -438,8 +434,8 @@ def _print_summary(stats: dict) -> None:
 
 
 def main() -> None:
-    args = _parse_cli_args()
-    dir_path, namespace_id = _validate_inputs(args)
+    parser, args = _parse_cli_args()
+    dir_path, namespace_id = _validate_inputs(parser, args)
 
     stats = run_import(
         dir_path=dir_path,
