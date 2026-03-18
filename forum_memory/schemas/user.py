@@ -13,6 +13,13 @@ class UserCreate(BaseModel):
     role: str = "user"
 
 
+class UserUpdate(BaseModel):
+    display_name: str | None = None
+    username: str | None = None
+    email: str | None = None
+    role: str | None = None
+
+
 class UserRead(BaseModel):
     id: UUID
     employee_id: str

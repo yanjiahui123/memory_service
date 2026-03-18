@@ -10,7 +10,7 @@ from forum_memory.models.user import User
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.namespace_moderator import NamespaceModerator
 from forum_memory.models.enums import SystemRole
-from forum_memory.schemas.user import UserCreate, UserRead
+from forum_memory.schemas.user import UserCreate, UserUpdate, UserRead
 from forum_memory.schemas.namespace import NamespaceRead
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -68,13 +68,31 @@ def create_user(data: UserCreate, session: Session = Depends(get_db), admin: Use
     return user
 
 
-@router.delete("/{user_id}", status_code=204)
-def deactivate_user(user_id: UUID, session: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    """管理员：停用用户。"""
+@router.put("/{user_id}", response_model=UserRead)
+def update_user(
+    user_id: UUID,
+    data: UserUpdate,
+    session: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """管理员：修改用户信息或角色。"""
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(404, "用户不存在")
-    if user.employee_id == "00000000":
-        raise HTTPException(400, "不能停用超级管理员")
-    user.is_active = False
+    if user.employee_id == "00000000" and data.role and data.role != "super_admin":
+        raise HTTPException(400, "不能修改系统管理员的角色")
+    _apply_user_updates(user, data)
     session.commit()
+    session.refresh(user)
+    return user
+
+
+def _apply_user_updates(user: User, data: UserUpdate) -> None:
+    if data.display_name is not None:
+        user.display_name = data.display_name
+    if data.username is not None:
+        user.username = data.username
+    if data.email is not None:
+        user.email = data.email
+    if data.role is not None:
+        user.role = SystemRole(data.role)
