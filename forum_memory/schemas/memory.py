@@ -71,6 +71,7 @@ class MemoryFilter(BaseModel):
     tags: str | None = None
     q: str | None = None
     source_id: UUID | None = None
+    quality_score_max: float | None = None
 
 
 class MemorySearchRequest(BaseModel):

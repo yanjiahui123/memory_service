@@ -642,6 +642,8 @@ def _apply_filters(stmt, filters: MemoryFilter):
         stmt = stmt.where(Memory.content.ilike(f"%{filters.q}%"))
     if filters.source_id:
         stmt = stmt.where(Memory.source_id == filters.source_id)
+    if filters.quality_score_max is not None:
+        stmt = stmt.where(Memory.quality_score <= filters.quality_score_max)
     return stmt
 
 
