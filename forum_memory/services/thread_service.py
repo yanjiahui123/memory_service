@@ -147,14 +147,16 @@ def resolve_thread(session: Session, thread_id: UUID, best_answer_id: UUID | Non
     if not can_transition(thread.status, ThreadStatus.RESOLVED):
         raise ValueError(f"Cannot resolve thread in {thread.status} state")
 
-    resolved_type = _determine_resolved_type(session, best_answer_id)
+    # Preserve previously adopted best_answer_id if none explicitly provided
+    effective_answer_id = best_answer_id if best_answer_id is not None else thread.best_answer_id
+    resolved_type = _determine_resolved_type(session, effective_answer_id)
     thread.status = ThreadStatus.RESOLVED
     thread.resolved_type = resolved_type
-    thread.best_answer_id = best_answer_id
+    thread.best_answer_id = effective_answer_id
     thread.resolved_at = datetime.now(tz=timezone(timedelta(hours=8)))
 
-    if best_answer_id:
-        _mark_best_answer(session, best_answer_id)
+    if effective_answer_id:
+        _mark_best_answer(session, effective_answer_id)
 
     _add_event(session, "thread.resolved", "Thread", thread, {"resolved_type": resolved_type.value})
     session.commit()
@@ -163,6 +165,39 @@ def resolve_thread(session: Session, thread_id: UUID, best_answer_id: UUID | Non
     # 更新被引用记忆的 resolved_citation_count，并刷新其质量分
     _update_resolved_citations(session, thread_id)
 
+    return thread
+
+
+def adopt_answer(session: Session, thread_id: UUID, best_answer_id: UUID) -> Thread:
+    """Mark best answer without closing the thread (thread stays OPEN)."""
+    thread = session.get(Thread, thread_id)
+    if not thread:
+        raise ValueError("Thread not found")
+    # Clear old best_answer mark if switching to a different comment
+    if thread.best_answer_id and thread.best_answer_id != best_answer_id:
+        prev = session.get(Comment, thread.best_answer_id)
+        if prev:
+            prev.is_best_answer = False
+    thread.best_answer_id = best_answer_id
+    _mark_best_answer(session, best_answer_id)
+    session.commit()
+    session.refresh(thread)
+    return thread
+
+
+def reopen_thread(session: Session, thread_id: UUID) -> Thread:
+    """Reopen a RESOLVED or TIMEOUT_CLOSED thread back to OPEN."""
+    thread = session.get(Thread, thread_id)
+    if not thread:
+        raise ValueError("Thread not found")
+    if not can_transition(thread.status, ThreadStatus.OPEN):
+        raise ValueError(f"Cannot reopen thread in {thread.status} state")
+    thread.status = ThreadStatus.OPEN
+    thread.resolved_type = None
+    thread.resolved_at = None
+    thread.timeout_at = None
+    session.commit()
+    session.refresh(thread)
     return thread
 
 

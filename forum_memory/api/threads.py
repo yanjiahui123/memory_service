@@ -83,6 +83,47 @@ def resolve_thread(thread_id: UUID, data: ThreadResolve, session: Session = Depe
         raise HTTPException(400, str(e)) from e
 
 
+@router.post("/{thread_id}/adopt-answer", response_model=ThreadRead)
+def adopt_answer(thread_id: UUID, data: ThreadResolve, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    thread = thread_service.get_thread(session, thread_id)
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    check_namespace_write_access(thread.namespace_id, session, user)
+    if not data.best_answer_id:
+        raise HTTPException(400, "best_answer_id is required")
+    try:
+        return thread_service.adopt_answer(session, thread_id, data.best_answer_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+def _is_board_admin_for_ns(session: Session, user: User, namespace_id: UUID) -> bool:
+    if user.role == SystemRole.SUPER_ADMIN:
+        return True
+    if user.role == SystemRole.BOARD_ADMIN:
+        stmt = select(NamespaceModerator).where(
+            NamespaceModerator.user_id == user.id,
+            NamespaceModerator.namespace_id == namespace_id,
+        )
+        return session.exec(stmt).first() is not None
+    return False
+
+
+@router.post("/{thread_id}/reopen", response_model=ThreadRead)
+def reopen_thread(thread_id: UUID, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    thread = thread_service.get_thread(session, thread_id)
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    is_author = thread.author_id == user.id
+    is_admin = _is_board_admin_for_ns(session, user, thread.namespace_id)
+    if not is_author and not is_admin:
+        raise HTTPException(403, "只有帖子作者或管理员可以重新开启帖子")
+    try:
+        return thread_service.reopen_thread(session, thread_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @router.post("/{thread_id}/timeout-close", response_model=ThreadRead)
 def timeout_close(thread_id: UUID, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
     thread = thread_service.get_thread(session, thread_id)

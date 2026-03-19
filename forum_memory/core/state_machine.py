@@ -7,8 +7,8 @@ from forum_memory.models.enums import (
 # Valid transitions: from_status -> set of allowed to_statuses
 VALID_TRANSITIONS: dict[ThreadStatus, set[ThreadStatus]] = {
     ThreadStatus.OPEN: {ThreadStatus.RESOLVED, ThreadStatus.TIMEOUT_CLOSED, ThreadStatus.DELETED},
-    ThreadStatus.RESOLVED: {ThreadStatus.DELETED},
-    ThreadStatus.TIMEOUT_CLOSED: {ThreadStatus.DELETED},
+    ThreadStatus.RESOLVED: {ThreadStatus.OPEN, ThreadStatus.DELETED},
+    ThreadStatus.TIMEOUT_CLOSED: {ThreadStatus.OPEN, ThreadStatus.DELETED},
     ThreadStatus.DELETED: set(),
 }
 
