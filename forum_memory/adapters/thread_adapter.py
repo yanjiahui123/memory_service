@@ -58,7 +58,11 @@ class ThreadSourceAdapter(SourceAdapter):
 
 
 def _build_discussion(session: Session, thread_id: UUID) -> str:
-    """Build formatted discussion text from thread comments."""
+    """Build formatted discussion text from thread comments.
+
+    AI comments that were NOT adopted as best answer are excluded to avoid
+    polluting the extraction context with unvalidated AI-generated content.
+    """
     stmt = (
         select(Comment)
         .where(Comment.thread_id == thread_id, Comment.deleted_at.is_(None))
@@ -67,6 +71,8 @@ def _build_discussion(session: Session, thread_id: UUID) -> str:
     comments = list(session.exec(stmt).all())
     parts = []
     for c in comments:
+        if c.is_ai and not c.is_best_answer:
+            continue  # Skip AI answers not adopted as best answer
         role = "AI" if c.is_ai else c.author_role
         best = " [BEST]" if c.is_best_answer else ""
         parts.append(f"[{role}{best}]: {c.content}")
