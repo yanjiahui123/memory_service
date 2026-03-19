@@ -459,17 +459,40 @@ def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
         )},
     ])
 
+    comment = _upsert_ai_comment(session, thread_id, answer, cited_ids, stored_rag_context)
+    session.commit()
+    session.refresh(comment)
+    return comment
+
+
+def _upsert_ai_comment(
+    session: Session,
+    thread_id: UUID,
+    content: str,
+    cited_ids: list[UUID],
+    rag_context: str | None,
+) -> Comment:
+    """每帖只保留一条 AI 回答：有则更新内容，无则新建并计数。"""
+    stmt = select(Comment).where(
+        Comment.thread_id == thread_id,
+        Comment.is_ai.is_(True),
+        Comment.deleted_at.is_(None),
+    )
+    existing = session.exec(stmt).first()
+    if existing:
+        existing.content = content
+        existing.cited_memory_ids = [str(mid) for mid in cited_ids]
+        existing.rag_context = rag_context
+        return existing
     comment = Comment(
-        thread_id=thread_id, author_id=None, content=answer,
+        thread_id=thread_id, author_id=None, content=content,
         is_ai=True, author_role="ai",
         cited_memory_ids=[str(mid) for mid in cited_ids],
-        rag_context=stored_rag_context,
+        rag_context=rag_context,
     )
     session.add(comment)
     _increment_comment_count(session, thread_id)
     _increment_cite_counts(session, cited_ids)
-    session.commit()
-    session.refresh(comment)
     return comment
 
 
