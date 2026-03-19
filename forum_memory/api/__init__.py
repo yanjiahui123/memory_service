@@ -11,6 +11,7 @@ from forum_memory.api.uploads import router as upload_router
 from forum_memory.api.admin import router as admin_router
 from forum_memory.api.auth import router as auth_router
 from forum_memory.api.relations import router as relation_router
+from forum_memory.api.notifications import router as notif_router
 
 
 def register_routers(app: FastAPI) -> None:
@@ -24,3 +25,4 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(upload_router, prefix=prefix)
     app.include_router(admin_router, prefix=prefix)
     app.include_router(relation_router, prefix=prefix)
+    app.include_router(notif_router, prefix=prefix)

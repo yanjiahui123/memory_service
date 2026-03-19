@@ -143,12 +143,33 @@ def list_comments(thread_id: UUID, session: Session = Depends(get_db)):
     users = {}
     if author_ids:
         users = {u.id: u.display_name for u in session.exec(select(User).where(User.id.in_(author_ids))).all()}
+
+    # 构建 comment_id → author_id 映射，用于填充 reply_to_author_display_name
+    comment_author_map = {c.id: c.author_id for c in comments}
+
     result = []
     for c in comments:
         d = c.model_dump()
         d["author_display_name"] = users.get(c.author_id) if c.author_id else None
+        d["reply_to_author_display_name"] = _resolve_reply_author(
+            c.reply_to_comment_id, comment_author_map, users,
+        )
         result.append(d)
     return result
+
+
+def _resolve_reply_author(
+    reply_to_id: str | None,
+    comment_author_map: dict,
+    users: dict,
+) -> str | None:
+    """Resolve display name of the comment being replied to."""
+    if not reply_to_id:
+        return None
+    parent_author_id = comment_author_map.get(reply_to_id)
+    if not parent_author_id:
+        return None
+    return users.get(parent_author_id)
 
 
 @router.post("/{thread_id}/comments", response_model=CommentRead, status_code=201)

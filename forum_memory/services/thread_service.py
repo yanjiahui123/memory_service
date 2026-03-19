@@ -286,18 +286,43 @@ def list_comments(session: Session, thread_id: UUID) -> list[Comment]:
 
 
 def add_comment(session: Session, data: CommentCreate, author_id: UUID | None, is_ai: bool = False, author_role: str = "commenter") -> Comment:
+    thread = session.get(Thread, data.thread_id)
+    if not thread:
+        raise ValueError("Thread not found")
+
+    _validate_reply_target(session, data)
+
     comment = Comment(
         thread_id=data.thread_id,
         author_id=author_id,
         content=data.content,
         is_ai=is_ai,
         author_role=author_role,
+        reply_to_comment_id=getattr(data, "reply_to_comment_id", None),
     )
     session.add(comment)
     _increment_comment_count(session, data.thread_id)
+
+    # 同事务内创建通知
+    if not is_ai:
+        from forum_memory.services.notification_service import notify_on_comment
+        notify_on_comment(session, comment, thread)
+
     session.commit()
     session.refresh(comment)
     return comment
+
+
+def _validate_reply_target(session: Session, data: CommentCreate) -> None:
+    """Validate that reply_to_comment_id refers to a valid, non-deleted comment in the same thread."""
+    reply_id = getattr(data, "reply_to_comment_id", None)
+    if not reply_id:
+        return
+    parent = session.get(Comment, reply_id)
+    if not parent or parent.thread_id != data.thread_id:
+        raise ValueError("Reply target comment not found in this thread")
+    if parent.deleted_at:
+        raise ValueError("Cannot reply to a deleted comment")
 
 
 def _determine_resolved_type(session: Session, best_answer_id: UUID | None) -> ResolvedType:

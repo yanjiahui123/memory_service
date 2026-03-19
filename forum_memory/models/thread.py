@@ -46,6 +46,7 @@ class Comment(UUIDMixin, TimestampMixin, table=True):
 
     thread_id: UUID = Field(foreign_key="memo_threads.id", index=True)
     author_id: UUID | None = Field(default=None, foreign_key="memo_users.id")
+    reply_to_comment_id: UUID | None = Field(default=None, foreign_key="memo_comments.id", index=True)
     is_ai: bool = Field(default=False)
 
     content: str = Field(sa_column=Column(Text, nullable=False))

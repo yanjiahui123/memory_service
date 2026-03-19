@@ -11,9 +11,11 @@ from forum_memory.models.operation_log import OperationLog
 from forum_memory.models.event import DomainEvent
 from forum_memory.models.vote import CommentVote
 from forum_memory.models.memory_relation import MemoryRelation
+from forum_memory.models.notification import Notification
 
 __all__ = [
     "User", "Namespace", "NamespaceModerator", "Thread", "Comment",
     "Memory", "ExtractionRecord", "Feedback",
     "OperationLog", "DomainEvent", "CommentVote", "MemoryRelation",
+    "Notification",
 ]

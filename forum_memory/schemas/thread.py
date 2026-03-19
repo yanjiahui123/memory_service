@@ -41,6 +41,7 @@ class ThreadResolve(BaseModel):
 class CommentCreate(BaseModel):
     thread_id: UUID
     content: str
+    reply_to_comment_id: UUID | None = None
 
 
 class CommentRead(BaseModel):
@@ -48,6 +49,8 @@ class CommentRead(BaseModel):
     thread_id: UUID
     author_id: UUID | None = None
     author_display_name: str | None = None
+    reply_to_comment_id: UUID | None = None
+    reply_to_author_display_name: str | None = None
     content: str
     author_role: str
     is_ai: bool
