@@ -112,12 +112,12 @@ def create_thread(session: Session, data: ThreadCreate, author_id: UUID) -> Thre
     session.refresh(thread)
 
     # AI 回答提交到后台线程，不阻塞 HTTP 请求返回
-    _submit_ai_answer(thread.id)
+    submit_ai_answer(thread.id)
 
     return thread
 
 
-def _submit_ai_answer(thread_id: UUID) -> None:
+def submit_ai_answer(thread_id: UUID) -> None:
     """Submit AI answer generation to background thread pool.
 
     Uses its own DB session since the request session will be closed

@@ -160,18 +160,14 @@ def add_comment(thread_id: UUID, data: CommentCreate, session: Session = Depends
     return thread_service.add_comment(session, data, user.id)
 
 
-@router.post("/{thread_id}/ai-answer", response_model=CommentRead, status_code=201)
+@router.post("/{thread_id}/ai-answer", status_code=204)
 def ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """提交 AI 回答生成到后台线程，立即返回 204，避免前端等待 LLM 超时。"""
     thread = thread_service.get_thread(session, thread_id)
     if not thread:
         raise HTTPException(404, "Thread not found")
     check_namespace_write_access(thread.namespace_id, session, user)
-    try:
-        return thread_service.generate_ai_answer(session, thread_id)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    except Exception as e:
-        raise HTTPException(500, f"AI answer generation failed: {e}") from e
+    thread_service.submit_ai_answer(thread_id)
 
 
 @router.get("/{thread_id}/ai-answer/stream")
