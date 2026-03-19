@@ -4,6 +4,7 @@ import logging
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
 
+from sqlalchemy import cast, Text, or_
 from sqlmodel import Session, select
 
 from forum_memory.models.thread import Thread, Comment
@@ -40,7 +41,13 @@ def list_threads(
     if status:
         stmt = stmt.where(Thread.status == status)
     if q:
-        stmt = stmt.where(Thread.title.ilike(f"%{q}%"))
+        pattern = f"%{q}%"
+        stmt = stmt.where(or_(
+            Thread.title.ilike(pattern),
+            Thread.content.ilike(pattern),
+            Thread.environment.ilike(pattern),
+            cast(Thread.tags, Text).ilike(pattern),
+        ))
     if author_id:
         stmt = stmt.where(Thread.author_id == author_id)
     if priority:
@@ -71,7 +78,13 @@ def count_threads(
     if status:
         stmt = stmt.where(Thread.status == status)
     if q:
-        stmt = stmt.where(Thread.title.ilike(f"%{q}%"))
+        pattern = f"%{q}%"
+        stmt = stmt.where(or_(
+            Thread.title.ilike(pattern),
+            Thread.content.ilike(pattern),
+            Thread.environment.ilike(pattern),
+            cast(Thread.tags, Text).ilike(pattern),
+        ))
     if author_id:
         stmt = stmt.where(Thread.author_id == author_id)
     if priority:
