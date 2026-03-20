@@ -376,7 +376,8 @@ def toggle_upvote(session: Session, comment_id: UUID, user_id: UUID) -> tuple[Co
 
 def delete_comment(session: Session, comment_id: UUID, user_id: UUID, is_board_admin: bool = False) -> Thread:
     """Soft-delete a comment. Only comment author or board admin can delete.
-    Returns the parent thread."""
+    Returns the parent thread.
+    """
     comment = session.get(Comment, comment_id)
     if not comment:
         raise ValueError("Comment not found")
@@ -534,7 +535,6 @@ def _increment_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
     """Increment cite_count for cited memories."""
     if not cited_ids:
         return
-    from sqlalchemy import update as sa_update
     from forum_memory.models.memory import Memory
     session.execute(
         sa_update(Memory).where(Memory.id.in_(cited_ids)).values(cite_count=Memory.cite_count + 1)
@@ -563,7 +563,8 @@ def batch_timeout_threads(session: Session, timeout_days: int = 7) -> int:
 
 def reconcile_comment_counts(session: Session) -> int:
     """Fix drifted comment_count by reconciling against actual Comment rows.
-    Returns the number of threads corrected."""
+    Returns the number of threads corrected.
+    """
     from sqlmodel import func
     from sqlalchemy import text as sa_text
 
@@ -613,7 +614,6 @@ def _collect_cited_ids(ai_comments) -> set[UUID]:
 
 def _update_resolved_citations(session: Session, thread_id: UUID) -> None:
     """当帖子被解决时，递增所有 AI 回答所引用记忆的 resolved_citation_count，并刷新其质量分。"""
-    from sqlalchemy import update as sa_update
     from forum_memory.models.memory import Memory
 
     ai_comments = session.exec(
