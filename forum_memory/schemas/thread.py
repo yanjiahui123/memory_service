@@ -51,6 +51,7 @@ class CommentRead(BaseModel):
     author_display_name: str | None = None
     reply_to_comment_id: UUID | None = None
     reply_to_author_display_name: str | None = None
+    reply_to_content_preview: str | None = None
     content: str
     author_role: str
     is_ai: bool

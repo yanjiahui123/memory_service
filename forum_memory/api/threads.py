@@ -152,8 +152,9 @@ def list_comments(thread_id: UUID, session: Session = Depends(get_db)):
     if author_ids:
         users = {u.id: u.display_name for u in session.exec(select(User).where(User.id.in_(author_ids))).all()}
 
-    # 构建 comment_id → author_id 映射，用于填充 reply_to_author_display_name
+    # 构建 comment_id → (author_id, content) 映射，用于填充回复元信息
     comment_author_map = {c.id: c.author_id for c in comments}
+    comment_content_map = {c.id: c.content for c in comments}
 
     result = []
     for c in comments:
@@ -161,6 +162,9 @@ def list_comments(thread_id: UUID, session: Session = Depends(get_db)):
         d["author_display_name"] = users.get(c.author_id) if c.author_id else None
         d["reply_to_author_display_name"] = _resolve_reply_author(
             c.reply_to_comment_id, comment_author_map, users,
+        )
+        d["reply_to_content_preview"] = _truncate_preview(
+            comment_content_map.get(c.reply_to_comment_id),
         )
         result.append(d)
     return result
@@ -178,6 +182,20 @@ def _resolve_reply_author(
     if not parent_author_id:
         return None
     return users.get(parent_author_id)
+
+
+_PREVIEW_MAX_LEN = 100
+
+
+def _truncate_preview(content: str | None) -> str | None:
+    """Return first line of content, truncated to ~100 chars."""
+    if not content:
+        return None
+    # Take first non-empty line, strip markdown images/links noise
+    first_line = content.split("\n", 1)[0].strip()
+    if len(first_line) > _PREVIEW_MAX_LEN:
+        return first_line[:_PREVIEW_MAX_LEN] + "…"
+    return first_line
 
 
 @router.post("/{thread_id}/comments", response_model=CommentRead, status_code=201)
