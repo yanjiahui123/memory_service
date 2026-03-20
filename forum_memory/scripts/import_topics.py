@@ -147,6 +147,13 @@ def _create_comments(session: Session, thread: Thread, reply_posts: list[dict]) 
     return best_answer_id, topic_closed
 
 
+def _has_best_answer(data: dict, reply_posts: list[dict]) -> bool:
+    """Check whether the topic has any best-answer indicator."""
+    if data.get("best_answer_url"):
+        return True
+    return any(r.get("is_solution") for r in reply_posts)
+
+
 def _is_best_answer(reply: dict, best_answer_url: str | None, current_best: UUID | None) -> bool:
     """Determine if a reply is the best answer."""
     post_url = reply.get("post_url") or ""
@@ -199,6 +206,10 @@ def _import_one_file(
 
     title, topic_id = _parse_filename(filepath.name)
     reply_posts = data.get("reply_posts") or []
+
+    if not _has_best_answer(data, reply_posts):
+        logger.debug("skip %-50s  → no best answer", filepath.name)
+        return None, False, "skip (no best answer)"
 
     if dry_run:
         return _dry_run_result(title, data, reply_posts)
