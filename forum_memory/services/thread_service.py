@@ -96,6 +96,14 @@ def get_thread(session: Session, thread_id: UUID) -> Thread | None:
     return session.get(Thread, thread_id)
 
 
+def increment_view_count(session: Session, thread_id: UUID) -> None:
+    thread = session.get(Thread, thread_id)
+    if thread:
+        thread.view_count += 1
+        session.add(thread)
+        session.commit()
+
+
 def create_thread(session: Session, data: ThreadCreate, author_id: UUID) -> Thread:
     thread = Thread(
         namespace_id=data.namespace_id,
