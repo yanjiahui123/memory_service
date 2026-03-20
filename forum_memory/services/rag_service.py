@@ -81,7 +81,12 @@ def _parse_rag_response(data) -> tuple[str, str | None]:
     return str(data), None
 
 
-def query_rag(kb_sn_list: list[str], question: str, uid: str = "forum_memory") -> tuple[str, str | None]:
+def query_rag(
+    kb_sn_list: list[str],
+    question: str,
+    uid: str = "forum_memory",
+    top_k: int = 5,
+) -> tuple[str, str | None]:
     """Query external RAG API with knowledge base serial numbers.
 
     Returns (prompt_text, chunks_json). Empty string on failure.
@@ -94,7 +99,7 @@ def query_rag(kb_sn_list: list[str], question: str, uid: str = "forum_memory") -
         resp = requests.post(
             settings.rag_base_url,
             headers={"Content-Type": "application/json"},
-            json={"kb_sn_list": kb_sn_list, "question": question, "uid": uid},
+            json={"kb_sn_list": kb_sn_list, "question": question, "uid": uid, "top_k": top_k},
             timeout=settings.rag_timeout,
         )
         resp.raise_for_status()

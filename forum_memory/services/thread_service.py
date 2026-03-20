@@ -452,7 +452,9 @@ def _get_employee_id(session: Session, author_id: UUID | None) -> str:
     return "forum_memory"
 
 
-def _query_rag_context(ns_config: dict, question: str, enabled: bool, uid: str = "forum_memory") -> tuple[str, str | None]:
+def _query_rag_context(
+    ns_config: dict, question: str, enabled: bool, uid: str = "forum_memory",
+) -> tuple[str, str | None]:
     """Query RAG knowledge base. Returns (rag_prompt, rag_chunks_json)."""
     if not enabled:
         return "(knowledge base search disabled)", None
@@ -460,7 +462,8 @@ def _query_rag_context(ns_config: dict, question: str, enabled: bool, uid: str =
     kb_sn_list = ns_config.get("kb_sn_list", [])
     if not kb_sn_list:
         return "(no knowledge base configured)", None
-    rag_prompt_text, rag_chunks_json = query_rag(kb_sn_list, question, uid=uid)
+    top_k = min(max(int(ns_config.get("rag_top_k", 5)), 1), 10)
+    rag_prompt_text, rag_chunks_json = query_rag(kb_sn_list, question, uid=uid, top_k=top_k)
     if rag_prompt_text:
         return rag_prompt_text, rag_chunks_json
     return "(no knowledge base configured)", None
