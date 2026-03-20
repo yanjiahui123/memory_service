@@ -4,7 +4,7 @@ import logging
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
 
-from sqlalchemy import cast, Text, or_
+from sqlalchemy import cast, Text, or_, update as sa_update
 from sqlmodel import Session, select
 
 from forum_memory.models.thread import Thread, Comment
@@ -97,11 +97,11 @@ def get_thread(session: Session, thread_id: UUID) -> Thread | None:
 
 
 def increment_view_count(session: Session, thread_id: UUID) -> None:
-    thread = session.get(Thread, thread_id)
-    if thread:
-        thread.view_count += 1
-        session.add(thread)
-        session.commit()
+    """Atomic +1 on view_count, no select needed."""
+    session.execute(
+        sa_update(Thread).where(Thread.id == thread_id).values(view_count=Thread.view_count + 1)
+    )
+    session.commit()
 
 
 def create_thread(session: Session, data: ThreadCreate, author_id: UUID) -> Thread:

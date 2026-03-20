@@ -65,6 +65,12 @@ def get_thread(thread_id: UUID, session: Session = Depends(get_db), user: User =
     return _enrich_threads_with_authors(session, [thread])[0]
 
 
+@router.post("/{thread_id}/view", status_code=204)
+def record_view(thread_id: UUID, session: Session = Depends(get_db), _user: User = Depends(get_current_user)):
+    """Increment view count (fire-and-forget, idempotency not required)."""
+    thread_service.increment_view_count(session, thread_id)
+
+
 @router.post("", response_model=ThreadRead, status_code=201)
 @limiter.limit("10/minute")
 def create_thread(request: Request, data: ThreadCreate, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
