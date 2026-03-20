@@ -637,7 +637,7 @@ def _apply_filters(stmt, filters: MemoryFilter):
         for tag in filters.tags.split(","):
             tag = tag.strip()
             if tag:
-                stmt = stmt.where(literal_column("memo_memories.tags").op("@>")(sa_text(f"'{json.dumps([tag])}'::jsonb")))
+                stmt = stmt.where(literal_column("memo_memories.tags::jsonb").op("@>")(sa_text(f"'{json.dumps([tag])}'::jsonb")))
     if filters.q:
         stmt = stmt.where(Memory.content.ilike(f"%{filters.q}%"))
     if filters.source_id:
