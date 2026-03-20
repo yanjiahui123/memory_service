@@ -311,8 +311,9 @@ def add_comment(session: Session, data: CommentCreate, author_id: UUID | None, i
     session.add(comment)
     _increment_comment_count(session, data.thread_id)
 
-    # 同事务内创建通知
+    # flush 使 comment 行落库，后续 Notification FK 才能引用
     if not is_ai:
+        session.flush()
         from forum_memory.services.notification_service import notify_on_comment
         notify_on_comment(session, comment, thread)
 
