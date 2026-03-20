@@ -627,23 +627,45 @@ def _apply_filters(stmt, filters: MemoryFilter):
         stmt = stmt.where(Memory.authority == filters.authority)
     if filters.status:
         stmt = stmt.where(Memory.status == filters.status)
-    if filters.pending_confirm:
+    if filters.pending_review:
+        stmt = _apply_pending_review(stmt)
+    elif filters.pending_confirm:
         stmt = stmt.where(Memory.pending_human_confirm.is_(True))
     if filters.knowledge_type:
         stmt = stmt.where(Memory.knowledge_type == filters.knowledge_type)
     if filters.tags:
-        from sqlalchemy import text as sa_text, literal_column
-        import json
-        for tag in filters.tags.split(","):
-            tag = tag.strip()
-            if tag:
-                stmt = stmt.where(literal_column("memo_memories.tags::jsonb").op("@>")(sa_text(f"'{json.dumps([tag])}'::jsonb")))
+        stmt = _apply_tags_filter(stmt, filters.tags)
     if filters.q:
         stmt = stmt.where(Memory.content.ilike(f"%{filters.q}%"))
     if filters.source_id:
         stmt = stmt.where(Memory.source_id == filters.source_id)
     if filters.quality_score_max is not None:
         stmt = stmt.where(Memory.quality_score <= filters.quality_score_max)
+    return stmt
+
+
+def _apply_pending_review(stmt):
+    """Filter: pending_human_confirm=true OR (ACTIVE with low quality)."""
+    from sqlalchemy import or_
+
+    return stmt.where(or_(
+        Memory.pending_human_confirm.is_(True),
+        (Memory.status == MemoryStatus.ACTIVE) & (Memory.quality_score <= 0.3),
+    ))
+
+
+def _apply_tags_filter(stmt, tags_csv: str):
+    """Apply JSONB @> containment filter for each comma-separated tag."""
+    from sqlalchemy import text as sa_text, literal_column
+    import json
+
+    for tag in tags_csv.split(","):
+        tag = tag.strip()
+        if tag:
+            jsonb_val = sa_text(f"'{json.dumps([tag])}'::jsonb")
+            stmt = stmt.where(
+                literal_column("memo_memories.tags::jsonb").op("@>")(jsonb_val),
+            )
     return stmt
 
 

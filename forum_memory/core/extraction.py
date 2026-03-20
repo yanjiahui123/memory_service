@@ -148,11 +148,11 @@ def _compose_content(atom: dict) -> str:
     """Compose a rich content string from an atomized knowledge point."""
     parts = [atom["what"]]
     if atom.get("when"):
-        parts.append(f"Applicable when: {atom['when']}")
+        parts.append(f"适用场景: {atom['when']}")
     if atom.get("how"):
-        parts.append(f"How: {atom['how']}")
+        parts.append(f"操作方法: {atom['how']}")
     if atom.get("why"):
-        parts.append(f"Why: {atom['why']}")
+        parts.append(f"原因: {atom['why']}")
     return "\n".join(parts)
 
 

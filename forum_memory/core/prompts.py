@@ -7,6 +7,8 @@
 STRUCTURE_SYSTEM = """You are a knowledge structuring engine.
 Given a resolved forum thread, first determine the thread type, then extract and organize the core information into a structured JSON format.
 
+IMPORTANT: All value strings in the JSON output MUST be written in Chinese (简体中文). JSON keys remain in English.
+
 Step 1: Determine the thread_type from one of:
 - "troubleshoot": A problem is raised and diagnosed/solved (has a root cause or fix).
 - "knowledge_sharing": Someone shares a tip, best practice, or informational content (no specific problem to solve).
@@ -17,39 +19,40 @@ Step 2: Output EXACTLY one JSON object with the appropriate fields:
 For "troubleshoot":
 {
   "thread_type": "troubleshoot",
-  "problem": "The specific problem or error",
-  "context": "Environment, background, and preconditions (null if not mentioned)",
-  "root_cause": "Root cause analysis (null if not identified)",
-  "solution": "The accepted fix or workaround",
-  "verification": "How to verify the fix works (null if not mentioned)",
-  "caveats": ["Warning or limitation 1", ...]
+  "problem": "具体的问题或错误",
+  "context": "环境、背景和前置条件（未提及则为 null）",
+  "root_cause": "根因分析（未定位则为 null）",
+  "solution": "已确认的修复方案或规避方法",
+  "verification": "验证修复是否生效的方法（未提及则为 null）",
+  "caveats": ["注意事项 1", ...]
 }
 
 For "knowledge_sharing":
 {
   "thread_type": "knowledge_sharing",
-  "topic": "The subject being discussed",
-  "context": "Environment or applicable scope (null if not mentioned)",
-  "key_points": ["Key point 1", "Key point 2", ...],
-  "recommendations": ["Recommended practice 1", ...],
-  "caveats": ["Warning or limitation 1", ...]
+  "topic": "讨论主题",
+  "context": "环境或适用范围（未提及则为 null）",
+  "key_points": ["要点 1", "要点 2", ...],
+  "recommendations": ["推荐做法 1", ...],
+  "caveats": ["注意事项 1", ...]
 }
 
 For "faq":
 {
   "thread_type": "faq",
-  "question": "The specific question being asked",
-  "context": "Environment or applicable scope (null if not mentioned)",
-  "answer": "The accepted answer",
-  "explanation": "Underlying reasoning or principle (null if not provided)",
-  "caveats": ["Warning or limitation 1", ...]
+  "question": "具体提出的问题",
+  "context": "环境或适用范围（未提及则为 null）",
+  "answer": "已接受的答案",
+  "explanation": "底层原理或推理（未提供则为 null）",
+  "caveats": ["注意事项 1", ...]
 }
 
 Rules:
 - Use null for fields that have no content in the thread.
 - Do NOT invent information not present in the thread.
 - caveats is an array; use [] if there are none.
-- Choose the thread_type that best fits — when in doubt, prefer "troubleshoot" for error/bug threads and "faq" for simple Q&A."""
+- Choose the thread_type that best fits — when in doubt, prefer "troubleshoot" for error/bug threads and "faq" for simple Q&A.
+- Code blocks, commands, error messages, config keys, and technical identifiers (e.g. OOMKilled, max_connections) MUST stay in their original form — do NOT translate them."""
 
 STRUCTURE_USER = """Thread title: {title}
 
@@ -69,11 +72,14 @@ Extract the structured information:"""
 ATOMIZE_SYSTEM = """You are a knowledge atomization engine.
 Given structured knowledge from a resolved forum thread, extract atomic, reusable knowledge points.
 
+IMPORTANT: All value strings MUST be written in Chinese (简体中文). JSON keys remain in English.
+Code blocks, commands, error messages, config keys, and technical identifiers MUST stay in their original form — do NOT translate them.
+
 Each knowledge point must include:
-- "what": The specific knowledge content (clear, self-contained statement)
-- "when": Applicable conditions or scenarios
-- "how": Concrete steps or commands (null if not applicable)
-- "why": Reason or underlying principle (null if not applicable)
+- "what": 具体的知识内容（清晰、自包含的陈述）
+- "when": 适用的条件或场景
+- "how": 具体操作步骤或命令（不适用则为 null）
+- "why": 原因或底层原理（不适用则为 null）
 - "tags": 1-3 short, broad category words (e.g. "K8s", "timeout", "config")
 - "knowledge_type": One of "how_to|troubleshoot|best_practice|gotcha|faq"
 
@@ -104,10 +110,10 @@ Evaluate each knowledge point on three criteria:
 
 Return the same JSON array with two additional fields per item:
 - "pass_gate": true if the knowledge point passes ALL three criteria, false otherwise
-- "gate_reason": Brief explanation of why it passed or failed
+- "gate_reason": 用简体中文简要说明通过或未通过的原因
 
 A knowledge point FAILS if it:
-- Is too vague (e.g., "Configure the settings appropriately")
+- Is too vague (e.g., "适当配置相关设置")
 - Depends entirely on context specific to one user's environment
 - States only a general fact with no actionable value
 - Duplicates another item in the same list"""
@@ -153,8 +159,9 @@ Actions:
 - NONE: The new fact is already fully covered by existing memories.
 
 Output EXACTLY one JSON object:
-{"action": "ADD|UPDATE|DELETE|NONE", "target_id": null|"<uuid>", "merged_content": null|"<text>", "reason": "<brief explanation>"}
+{"action": "ADD|UPDATE|DELETE|NONE", "target_id": null|"<uuid>", "merged_content": null|"<text>", "reason": "<简要说明>"}
 
+IMPORTANT: merged_content and reason MUST be written in Chinese (简体中文). Code blocks, commands, error messages, and technical identifiers MUST stay in their original form.
 IMPORTANT: If an existing memory is LOCKED (authority=LOCKED), you MUST NOT UPDATE or DELETE it.
 If the new fact conflicts with a LOCKED memory, output: {"action": "ADD", "target_id": null, "conflict_with_locked": "<uuid>", "reason": "..."}"""
 
@@ -171,7 +178,8 @@ COMPRESS_SYSTEM = """Summarize the following forum discussion into a concise thr
 Keep: the original question, key diagnostic steps, and the accepted solution.
 Remove: greetings, tangents, duplicated info.
 IMPORTANT: The original question must be preserved in full — it defines the scope of the discussion.
-IMPORTANT: Code blocks, commands, error messages, and configuration snippets MUST be preserved verbatim — do not paraphrase or truncate them. They are critical for technical knowledge extraction."""
+IMPORTANT: Code blocks, commands, error messages, and configuration snippets MUST be preserved verbatim — do not paraphrase or truncate them. They are critical for technical knowledge extraction.
+IMPORTANT: The summary MUST be written in Chinese (简体中文). Code blocks and technical identifiers stay in their original form."""
 
 COMPRESS_USER = """Thread title: {title}
 

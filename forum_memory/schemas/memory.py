@@ -67,6 +67,7 @@ class MemoryFilter(BaseModel):
     authority: str | None = None
     status: str | None = None
     pending_confirm: bool | None = None
+    pending_review: bool | None = None
     knowledge_type: str | None = None
     tags: str | None = None
     q: str | None = None
