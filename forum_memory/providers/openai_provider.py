@@ -1,5 +1,7 @@
 """OpenAI LLM provider (synchronous)."""
 
+from collections.abc import Iterator
+
 from openai import OpenAI
 
 from forum_memory.providers.base import LLMProvider
@@ -22,6 +24,18 @@ class OpenAIProvider(LLMProvider):
             temperature=0.2,
         )
         return resp.choices[0].message.content or ""
+
+    def complete_stream(self, messages: list[dict]) -> Iterator[str]:
+        resp = self.client.chat.completions.create(
+            model=self.main_model,
+            messages=messages,
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in resp:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
 
     def embed(self, text: str) -> list[float]:
         resp = self.client.embeddings.create(

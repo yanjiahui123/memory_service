@@ -8,7 +8,7 @@ Authentication strategy (in priority order):
 import logging
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Query, Request
 from sqlmodel import Session, select
 
 from forum_memory.database import get_session
@@ -115,19 +115,27 @@ def _resolve_user_from_cookie(request: Request, session: Session) -> User | None
 def get_current_user(
     request: Request,
     authorization: str = Header(default=""),
+    token: str = Query(default=""),
     session: Session = Depends(get_db),
 ) -> User:
     """
-    认证用户。支持两种方式（按优先级）：
+    认证用户。支持三种方式（按优先级）：
     1. JWT: Authorization: Bearer <token>（jwt_enabled=True 时优先使用）
-    2. SSO Cookie: hwsso_login 等 cookie（默认认证方式）
+    2. JWT query param: ?token=<token>（用于 EventSource 等无法发送 Header 的场景）
+    3. SSO Cookie: hwsso_login 等 cookie（默认认证方式）
     """
-    # 1. Try JWT first (if enabled)
+    # 1. Try JWT header first (if enabled)
     jwt_user = _resolve_user_from_jwt(authorization, session)
     if jwt_user:
         return jwt_user
 
-    # 2. SSO cookie (default)
+    # 2. Try JWT query param (for EventSource / SSE)
+    if token:
+        qs_user = _resolve_user_from_jwt(f"Bearer {token}", session)
+        if qs_user:
+            return qs_user
+
+    # 3. SSO cookie (default)
     cookie_user = _resolve_user_from_cookie(request, session)
     if cookie_user:
         return cookie_user

@@ -1,6 +1,7 @@
 """Abstract LLM provider interface."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 
 
 class LLMProvider(ABC):
@@ -9,6 +10,13 @@ class LLMProvider(ABC):
     @abstractmethod
     def complete(self, messages: list[dict]) -> str:
         """Run a chat completion and return the text."""
+
+    def complete_stream(self, messages: list[dict]) -> Iterator[str]:
+        """Streaming chat completion, yields text chunks.
+
+        Default implementation falls back to non-streaming complete().
+        """
+        yield self.complete(messages)
 
     @abstractmethod
     def embed(self, text: str) -> list[float]:

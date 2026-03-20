@@ -1,7 +1,9 @@
 """Custom LLM provider using internal HTTP APIs."""
 
+import json
 import urllib3
 import requests
+from collections.abc import Iterator
 
 from forum_memory.providers.base import LLMProvider
 from forum_memory.config import get_settings
@@ -38,6 +40,18 @@ class CustomProvider(LLMProvider):
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
+    def complete_stream(self, messages: list[dict]) -> Iterator[str]:
+        resp = requests.post(
+            self.llm_url,
+            headers={**self.headers, "Accept": "text/event-stream"},
+            json={"model": self.llm_model, "messages": messages, "stream": True},
+            verify=False,
+            timeout=self.timeout,
+            stream=True,
+        )
+        resp.raise_for_status()
+        yield from _iter_sse_tokens(resp)
+
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
 
@@ -72,3 +86,20 @@ class CustomProvider(LLMProvider):
         )
         resp.raise_for_status()
         return resp.json()
+
+
+def _iter_sse_tokens(resp: requests.Response) -> Iterator[str]:
+    """Parse OpenAI-compatible SSE stream, yielding content deltas."""
+    for raw_line in resp.iter_lines(decode_unicode=True):
+        if not raw_line or not raw_line.startswith("data:"):
+            continue
+        payload = raw_line[len("data:"):].strip()
+        if payload == "[DONE]":
+            return
+        try:
+            chunk = json.loads(payload)
+            delta = chunk["choices"][0]["delta"].get("content")
+            if delta:
+                yield delta
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue

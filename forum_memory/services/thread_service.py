@@ -469,10 +469,8 @@ def _query_rag_context(
     return "(no knowledge base configured)", None
 
 
-def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
-    """Search memories, query RAG if configured, and generate an AI answer for a thread."""
-    from forum_memory.providers import get_provider
-
+def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], list[UUID], str | None]:
+    """Pre-process: search memories + RAG. Returns (messages, cited_ids, rag_context)."""
     thread = session.get(Thread, thread_id)
     if not thread:
         raise ValueError("Thread not found")
@@ -490,17 +488,44 @@ def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
         ns_config, question, ns_config.get("enable_rag_search", True), uid=author_uid,
     )
 
-    answer = get_provider().complete([
+    messages = [
         {"role": "system", "content": AI_ANSWER_SYSTEM},
         {"role": "user", "content": AI_ANSWER_USER.format(
             question=question, memories=memories_text, rag_context=rag_context_prompt,
         )},
-    ])
+    ]
+    return messages, cited_ids, stored_rag_context
+
+
+def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
+    """Search memories, query RAG if configured, and generate an AI answer for a thread."""
+    from forum_memory.providers import get_provider
+
+    messages, cited_ids, stored_rag_context = _prepare_ai_context(session, thread_id)
+    answer = get_provider().complete(messages)
 
     comment = _upsert_ai_comment(session, thread_id, answer, cited_ids, stored_rag_context)
     session.commit()
     session.refresh(comment)
     return comment
+
+
+def generate_ai_answer_stream(session: Session, thread_id: UUID):
+    """Generator: yield token chunks, then save final comment.
+
+    Yields str chunks. Caller must NOT use the session until generator is exhausted.
+    """
+    from forum_memory.providers import get_provider
+
+    messages, cited_ids, stored_rag_context = _prepare_ai_context(session, thread_id)
+    parts: list[str] = []
+    for chunk in get_provider().complete_stream(messages):
+        parts.append(chunk)
+        yield chunk
+
+    full_answer = "".join(parts)
+    _upsert_ai_comment(session, thread_id, full_answer, cited_ids, stored_rag_context)
+    session.commit()
 
 
 def _upsert_ai_comment(

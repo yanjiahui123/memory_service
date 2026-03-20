@@ -2,7 +2,6 @@
 
 import json
 import logging
-import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -219,42 +218,48 @@ def ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = 
 
 @router.get("/{thread_id}/ai-answer/stream")
 def stream_ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """SSE endpoint: push a ready signal when the AI answer appears.
+    """SSE endpoint: stream AI answer tokens in real-time.
 
-    Polls DB every 2 seconds for up to 60 seconds (reduced from 120s to limit worker blocking).
     Emits:
-      data: {"ready": true}    — AI comment exists, frontend should refetch
-      data: {"timeout": true}  — gave up, frontend may retry manually
-      : heartbeat              — keep-alive comment while waiting
+      data: {"phase":"searching"}   — searching memories / RAG
+      data: {"phase":"generating"}  — LLM generation started
+      data: {"token":"..."}         — incremental text chunk
+      data: {"done":true}           — generation complete, comment saved
+      data: {"error":"..."}         — generation failed
     """
-    # Validate thread exists and user has access before starting long-lived stream
     thread = thread_service.get_thread(session, thread_id)
     if not thread:
         raise HTTPException(404, "Thread not found")
     check_namespace_read_access(thread.namespace_id, session, user)
 
-    from forum_memory.database import engine
-    from forum_memory.models.thread import Comment
-
     def _generate():
-        for _ in range(30):  # 30 × 2s = 60s max (reduced from 120s)
-            with Session(engine) as bg_session:
-                stmt = select(Comment).where(
-                    Comment.thread_id == thread_id,
-                    Comment.is_ai.is_(True),
-                )
-                if bg_session.exec(stmt).first():
-                    yield f"data: {json.dumps({'ready': True})}\n\n"
-                    return
-            time.sleep(2)
-            yield ": heartbeat\n\n"
-        yield f"data: {json.dumps({'timeout': True})}\n\n"
+        from forum_memory.database import engine
+
+        yield _sse({"phase": "searching"})
+        with Session(engine) as bg_session:
+            try:
+                yield from _stream_answer(bg_session, thread_id)
+            except Exception as exc:
+                logger.exception("Streaming AI answer failed for thread %s", thread_id)
+                yield _sse({"error": str(exc)})
 
     return StreamingResponse(
         _generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _stream_answer(bg_session: Session, thread_id: UUID):
+    """Yield SSE events: phase→generating, tokens, done."""
+    yield _sse({"phase": "generating"})
+    for chunk in thread_service.generate_ai_answer_stream(bg_session, thread_id):
+        yield _sse({"token": chunk})
+    yield _sse({"done": True})
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @router.delete("/{thread_id}", status_code=204)
