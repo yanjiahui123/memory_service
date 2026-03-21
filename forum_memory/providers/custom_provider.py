@@ -38,6 +38,7 @@ class CustomProvider(LLMProvider):
             timeout=self.timeout,
         )
         resp.raise_for_status()
+        resp.encoding = "utf-8"
         return resp.json()["choices"][0]["message"]["content"]
 
     def complete_stream(self, messages: list[dict]) -> Iterator[str]:
@@ -50,6 +51,9 @@ class CustomProvider(LLMProvider):
             stream=True,
         )
         resp.raise_for_status()
+        # 强制 UTF-8：很多内部 LLM 服务响应头缺少 charset，
+        # requests 会 fallback 到 ISO-8859-1 导致中文乱码
+        resp.encoding = "utf-8"
         yield from _iter_sse_tokens(resp)
 
     def embed(self, text: str) -> list[float]:

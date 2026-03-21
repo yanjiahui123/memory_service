@@ -243,7 +243,7 @@ def stream_ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: 
 
     return StreamingResponse(
         _generate(),
-        media_type="text/event-stream",
+        media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
