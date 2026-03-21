@@ -331,15 +331,23 @@ def list_quality_alerts(
     if namespace_id:
         check_board_permission(namespace_id, session, user)
 
-    stmt = (
+    from sqlmodel import func
+
+    base_where = Memory.pending_human_confirm.is_(True)
+
+    # Count query
+    count_stmt = select(func.count()).select_from(Memory).where(base_where)
+    count_stmt = _apply_namespace_filter(count_stmt, namespace_id, session, user)
+    total = session.exec(count_stmt).one()
+
+    # Page query
+    page_stmt = (
         select(Memory)
-        .where(Memory.pending_human_confirm.is_(True))
+        .where(base_where)
         .order_by(Memory.wrong_count.desc(), Memory.updated_at.desc())
     )
-    stmt = _apply_namespace_filter(stmt, namespace_id, session, user)
-
-    total = len(session.exec(stmt).all())
-    items = list(session.exec(stmt.offset((page - 1) * size).limit(size)).all())
+    page_stmt = _apply_namespace_filter(page_stmt, namespace_id, session, user)
+    items = list(session.exec(page_stmt.offset((page - 1) * size).limit(size)).all())
     return QualityAlertList(items=items, total=total)
 
 
