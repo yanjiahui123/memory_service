@@ -119,9 +119,8 @@ def create_thread(session: Session, data: ThreadCreate, author_id: UUID) -> Thre
     session.commit()
     session.refresh(thread)
 
-    # AI 回答提交到后台线程，不阻塞 HTTP 请求返回
-    submit_ai_answer(thread.id)
-
+    # AI 回答由前端 SSE 流式端点驱动（ThreadDetail 页面自动连接），
+    # 此处不再提交后台任务，避免与 SSE 竞态导致双重 LLM 调用。
     return thread
 
 
@@ -500,12 +499,16 @@ def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], 
     return messages, cited_ids, stored_rag_context
 
 
-def generate_ai_answer(session: Session, thread_id: UUID) -> Comment:
+def generate_ai_answer(session: Session, thread_id: UUID) -> Comment | None:
     """Search memories, query RAG if configured, and generate an AI answer for a thread."""
     from forum_memory.providers import get_provider
 
     messages, cited_ids, stored_rag_context = _prepare_ai_context(session, thread_id)
     answer = get_provider().complete(messages)
+
+    if not answer or not answer.strip():
+        logger.warning("LLM returned empty answer for thread %s, skipping upsert", thread_id)
+        return None
 
     comment = _upsert_ai_comment(session, thread_id, answer, cited_ids, stored_rag_context)
     session.commit()
@@ -527,6 +530,9 @@ def generate_ai_answer_stream(session: Session, thread_id: UUID):
         yield chunk
 
     full_answer = "".join(parts)
+    if not full_answer.strip():
+        logger.warning("LLM streamed empty answer for thread %s, skipping upsert", thread_id)
+        return
     _upsert_ai_comment(session, thread_id, full_answer, cited_ids, stored_rag_context)
     session.commit()
 
