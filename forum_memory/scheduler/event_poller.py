@@ -69,6 +69,7 @@ def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
         run_extraction, has_reached_retry_limit,
     )
 
+    should_mark = True
     with Session(engine) as session:
         try:
             run_extraction(session, source_type, source_id)
@@ -86,11 +87,8 @@ def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
                     "[scheduler:extraction_poller] Stale IN_PROGRESS for %s/%s, will retry next poll",
                     source_type, source_id,
                 )
-                return
-            logger.info(
-                "[scheduler:extraction_poller] Extraction already in progress for %s/%s, skipping",
-                source_type, source_id,
-            )
+            # Active or stale: don't mark processed, let next poll handle it
+            should_mark = False
         except Exception:
             # Pipeline error (LLM failure etc.) — check retry limit before re-queuing
             session.rollback()
@@ -101,9 +99,11 @@ def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
                 )
             else:
                 # Leave event unprocessed so next poll retries
-                return
+                should_mark = False
 
-        _mark_event_processed(session, event_id)
+    # Use standalone session to avoid detached-object issues after rollback
+    if should_mark:
+        _mark_processed(event_id)
 
 
 def _is_extraction_stale(

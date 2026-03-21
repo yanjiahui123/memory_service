@@ -66,14 +66,16 @@ def _delete_old_records(session: Session, source_type: str, source_id: UUID) -> 
 def _soft_delete_old_memories(session, source_id: UUID, es_service) -> None:
     """Soft-delete old memories sourced from this source and remove from ES."""
     from forum_memory.models.memory import Memory
+    from forum_memory.services.memory_service import _resolve_es_index
 
     mem_stmt = select(Memory).where(
         Memory.source_id == source_id,
         Memory.status != MemoryStatus.DELETED,
     )
     for m in session.exec(mem_stmt).all():
+        index_name = _resolve_es_index(session, m.namespace_id)
         m.status = MemoryStatus.DELETED
-        es_service.delete_memory_doc(m.id)
+        es_service.delete_memory_doc(m.id, index_name=index_name)
 
 
 def run_extraction(session: Session, source_type: str, source_id: UUID) -> list[UUID]:
@@ -132,9 +134,12 @@ def has_reached_retry_limit(session: Session, source_type: str, source_id: UUID)
     return session.exec(stmt).first() is not None
 
 
-def _cleanup_retryable_record(session: Session, source_type: str, source_id: UUID) -> int:
+def _cleanup_retryable_record(
+    session: Session, source_type: str, source_id: UUID,
+) -> int | None:
     """Remove retryable extraction records and return the previous retry_count.
 
+    Returns None if no retryable record was found (first extraction).
     Retryable: FAILED, COMPLETED_EMPTY (under retry limit), stale IN_PROGRESS (>30 min).
     """
     stale_cutoff = datetime.now() - timedelta(minutes=30)
@@ -151,9 +156,12 @@ def _cleanup_retryable_record(session: Session, source_type: str, source_id: UUI
         ExtractionRecord.source_id == source_id,
         retryable,
     )
-    prev_retry = 0
-    for rec in session.exec(stmt).all():
-        prev_retry = max(prev_retry, rec.retry_count)
+    records = list(session.exec(stmt).all())
+    if not records:
+        session.flush()
+        return None
+    prev_retry = max(rec.retry_count for rec in records)
+    for rec in records:
         session.delete(rec)
     session.flush()
     return prev_retry
@@ -180,13 +188,17 @@ def rollback_partial_memories(session: Session, source_id: UUID, since: datetime
         logger.info("Rolled back %d partial memories for source %s", len(memories), source_id)
 
 
-def _create_record(session: Session, ctx: SourceContext, prev_retry: int = 0) -> ExtractionRecord:
+def _create_record(
+    session: Session, ctx: SourceContext, prev_retry: int | None = None,
+) -> ExtractionRecord:
+    # prev_retry=None means first extraction (no previous record found)
+    retry_count = 0 if prev_retry is None else prev_retry + 1
     record = ExtractionRecord(
         source_type=ctx.source_type,
         source_id=ctx.source_id,
         namespace_id=ctx.namespace_id,
         status=ExtractionStatus.IN_PROGRESS,
-        retry_count=prev_retry + 1 if prev_retry > 0 else 0,
+        retry_count=retry_count,
     )
     session.add(record)
     session.commit()
