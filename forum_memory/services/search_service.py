@@ -155,7 +155,8 @@ def _preprocess_query(session: Session, req: MemorySearchRequest) -> str:
 def _apply_dictionary(query: str, dictionary: dict) -> str:
     result = query
     for slang, canonical in dictionary.items():
-        result = re_mod.sub(re_mod.escape(slang), canonical, result, flags=re_mod.IGNORECASE)
+        # Use lambda to prevent backslash sequences in canonical being interpreted as backreferences
+        result = re_mod.sub(re_mod.escape(slang), lambda _m: canonical, result, flags=re_mod.IGNORECASE)
     return result
 
 

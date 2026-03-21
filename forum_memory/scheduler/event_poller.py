@@ -58,6 +58,8 @@ def poll_and_extract() -> None:
                 "[scheduler:extraction_poller] Extraction failed for %s/%s (event %s)",
                 adapter.source_type(), event.aggregate_id, event.id,
             )
+            # Mark processed to avoid busy-loop; extraction retry is managed at ExtractionRecord level
+            _mark_processed(event.id)
 
     if processed:
         logger.info("[scheduler:extraction_poller] Processed %d/%d events", processed, len(events))
