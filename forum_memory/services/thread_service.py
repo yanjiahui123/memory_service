@@ -259,9 +259,6 @@ def delete_thread(session: Session, thread_id: UUID, deleted_by_admin: bool = Fa
                 thread_id, len(memories),
             )
         else:
-            from forum_memory.services import es_service
-            ns = session.get(Namespace, thread.namespace_id)
-            index_name = ns.es_index_name if ns else None
             for m in memories:
                 m.status = MemoryStatus.DELETED
                 m.indexed_at = None  # Mark ES as stale for repair sensor fallback
@@ -543,9 +540,12 @@ def _upsert_ai_comment(
     )
     existing = session.exec(stmt).first()
     if existing:
+        old_ids = _parse_cited_ids(existing.cited_memory_ids)
+        _decrement_cite_counts(session, old_ids)
         existing.content = content
         existing.cited_memory_ids = [str(mid) for mid in cited_ids]
         existing.rag_context = rag_context
+        _increment_cite_counts(session, cited_ids)
         return existing
     comment = Comment(
         thread_id=thread_id, author_id=None, content=content,
@@ -559,6 +559,19 @@ def _upsert_ai_comment(
     return comment
 
 
+def _parse_cited_ids(raw: list | None) -> list[UUID]:
+    """Parse cited_memory_ids JSON list to UUID list, ignoring invalid entries."""
+    if not raw:
+        return []
+    result = []
+    for mid in raw:
+        try:
+            result.append(UUID(str(mid)))
+        except (ValueError, AttributeError):
+            pass
+    return result
+
+
 def _increment_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
     """Increment cite_count for cited memories."""
     if not cited_ids:
@@ -566,6 +579,19 @@ def _increment_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
     from forum_memory.models.memory import Memory
     session.execute(
         sa_update(Memory).where(Memory.id.in_(cited_ids)).values(cite_count=Memory.cite_count + 1)
+    )
+
+
+def _decrement_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
+    """Decrement cite_count for previously cited memories (floor at 0)."""
+    if not cited_ids:
+        return
+    from forum_memory.models.memory import Memory
+    from sqlalchemy import case
+    session.execute(
+        sa_update(Memory).where(Memory.id.in_(cited_ids)).values(
+            cite_count=case((Memory.cite_count > 0, Memory.cite_count - 1), else_=0)
+        )
     )
 
 

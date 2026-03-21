@@ -59,8 +59,6 @@ def get_thread(thread_id: UUID, session: Session = Depends(get_db), user: User =
     if not thread:
         raise HTTPException(404, "Thread not found")
     check_namespace_read_access(thread.namespace_id, session, user)
-    thread_service.increment_view_count(session, thread_id)
-    session.refresh(thread)
     return _enrich_threads_with_authors(session, [thread])[0]
 
 
