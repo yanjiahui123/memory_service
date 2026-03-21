@@ -14,7 +14,7 @@ from forum_memory.models.enums import ThreadStatus, ResolvedType
 from forum_memory.core.state_machine import can_transition
 from forum_memory.schemas.thread import ThreadCreate, CommentCreate
 from forum_memory.schemas.memory import MemorySearchRequest
-from forum_memory.core.prompts import AI_ANSWER_SYSTEM, AI_ANSWER_USER
+from forum_memory.core.prompts import AI_ANSWER_SYSTEM_V2, AI_ANSWER_USER_V2
 
 logger = logging.getLogger(__name__)
 
@@ -489,9 +489,9 @@ def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], 
     )
 
     messages = [
-        {"role": "system", "content": AI_ANSWER_SYSTEM},
-        {"role": "user", "content": AI_ANSWER_USER.format(
-            question=question, memories=memories_text, rag_context=rag_context_prompt,
+        {"role": "system", "content": AI_ANSWER_SYSTEM_V2.format(memories=memories_text)},
+        {"role": "user", "content": AI_ANSWER_USER_V2.format(
+            question=question, rag_context=rag_context_prompt,
         )},
     ]
     return messages, cited_ids, stored_rag_context

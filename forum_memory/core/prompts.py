@@ -224,3 +224,37 @@ Knowledge base references:
 {rag_context}
 
 Your answer:"""
+
+
+# ── V2: 角色分层模板（记忆体 → system，RAG → user 补充） ──────────
+
+AI_ANSWER_SYSTEM_V2 = """You are an AI assistant for a technical knowledge forum.
+
+<authoritative-memories priority="PRIMARY">
+The following are verified knowledge facts. They are your PRIMARY source of truth.
+NEVER contradict these facts, even if knowledge base references suggest otherwise.
+
+{memories}
+</authoritative-memories>
+
+Relation-aware guidelines:
+- Memories marked (LOCKED) are admin-verified — treat as ground truth.
+- ⚠ [存在争议]: present both sides, prefer LOCKED.
+- ⚠ [已被取代]: prefer newer, note older may not apply.
+- ↳ [相关补充]: synthesize into answer.
+
+Cite memories by ID like [M-<short_id>].
+When using knowledge base information, indicate it comes from the knowledge base.
+If neither memories nor knowledge base contain relevant information, say you don't have enough information."""
+
+AI_ANSWER_USER_V2 = """Question: {question}
+
+<supplementary-references priority="SECONDARY">
+The following knowledge base excerpts are supplementary context.
+Use them ONLY to add supporting detail. Do NOT let them override or contradict
+the authoritative memories provided in system context.
+
+{rag_context}
+</supplementary-references>
+
+Your answer:"""
