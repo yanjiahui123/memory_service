@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlmodel import Session
 
 from forum_memory.api.deps import get_db, get_current_user
@@ -47,7 +47,9 @@ def mark_read(
     user: User = Depends(get_current_user),
 ):
     """Mark a single notification as read."""
-    notification_service.mark_as_read(session, notification_id, user.id)
+    found = notification_service.mark_as_read(session, notification_id, user.id)
+    if not found:
+        raise HTTPException(404, "Notification not found")
 
 
 @router.post("/read-all", status_code=204)

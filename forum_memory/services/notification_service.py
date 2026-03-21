@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlmodel import Session, select, func
-from sqlalchemy import update as sa_update
+from sqlalchemy import and_, update as sa_update
 
 from forum_memory.models.notification import Notification
+from forum_memory.models.enums import ThreadStatus
 from forum_memory.models.thread import Thread, Comment
 from forum_memory.models.user import User
 
@@ -85,11 +86,17 @@ def _notify_reply_target(
 # ── Queries ──────────────────────────────────────────────────────────────────
 
 
+def _thread_alive_clause():
+    """Return a single join-ON clause that excludes notifications for deleted threads."""
+    return and_(Notification.thread_id == Thread.id, Thread.status != ThreadStatus.DELETED)
+
+
 def get_unread_count(session: Session, user_id: UUID) -> int:
-    """Count unread notifications for a user."""
+    """Count unread notifications for a user (excludes deleted threads)."""
     stmt = (
         select(func.count())
         .select_from(Notification)
+        .join(Thread, _thread_alive_clause())
         .where(Notification.recipient_id == user_id, Notification.is_read.is_(False))
     )
     return session.exec(stmt).one()
@@ -103,7 +110,11 @@ def list_notifications(
     unread_only: bool = False,
 ) -> tuple[list[dict], int]:
     """List notifications with enriched actor and thread info. Returns (items, total)."""
-    base = select(Notification).where(Notification.recipient_id == user_id)
+    base = (
+        select(Notification)
+        .join(Thread, _thread_alive_clause())
+        .where(Notification.recipient_id == user_id)
+    )
     if unread_only:
         base = base.where(Notification.is_read.is_(False))
 
@@ -120,9 +131,12 @@ def list_notifications(
 def _count_notifications(
     session: Session, user_id: UUID, unread_only: bool,
 ) -> int:
-    """Count total notifications matching filters."""
-    stmt = select(func.count()).select_from(Notification).where(
-        Notification.recipient_id == user_id,
+    """Count total notifications matching filters (excludes deleted threads)."""
+    stmt = (
+        select(func.count())
+        .select_from(Notification)
+        .join(Thread, _thread_alive_clause())
+        .where(Notification.recipient_id == user_id)
     )
     if unread_only:
         stmt = stmt.where(Notification.is_read.is_(False))
@@ -167,14 +181,15 @@ def _batch_thread_titles(session: Session, thread_ids: set[UUID]) -> dict[UUID, 
 # ── Mutations ────────────────────────────────────────────────────────────────
 
 
-def mark_as_read(session: Session, notification_id: UUID, user_id: UUID) -> None:
-    """Mark a single notification as read."""
+def mark_as_read(session: Session, notification_id: UUID, user_id: UUID) -> bool:
+    """Mark a single notification as read. Returns False if not found / not owned."""
     notif = session.get(Notification, notification_id)
     if not notif or notif.recipient_id != user_id:
-        return
+        return False
     notif.is_read = True
     notif.read_at = datetime.now(tz=_TZ)
     session.commit()
+    return True
 
 
 def mark_all_as_read(session: Session, user_id: UUID) -> int:
