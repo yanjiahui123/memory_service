@@ -168,7 +168,7 @@ def list_comments(thread_id: UUID, session: Session = Depends(get_db)):
 
 
 def _resolve_reply_author(
-    reply_to_id: str | None,
+    reply_to_id: UUID | None,
     comment_author_map: dict,
     users: dict,
 ) -> str | None:
@@ -291,7 +291,7 @@ def delete_thread(
 @router.post("/{thread_id}/comments/{comment_id}/upvote", response_model=UpvoteResponse)
 def upvote_comment(thread_id: UUID, comment_id: UUID, session: Session = Depends(get_db), user_id: UUID = Depends(get_current_user_id)):
     try:
-        comment, voted = thread_service.toggle_upvote(session, comment_id, user_id)
+        comment, voted = thread_service.toggle_upvote(session, comment_id, user_id, thread_id=thread_id)
         return UpvoteResponse(
             id=comment.id, thread_id=comment.thread_id, upvote_count=comment.upvote_count, voted=voted,
         )
@@ -323,7 +323,7 @@ def delete_comment(
             is_board_admin = True
 
     try:
-        thread = thread_service.delete_comment(session, comment_id, user.id, is_board_admin=is_board_admin)
+        thread = thread_service.delete_comment(session, comment_id, user.id, thread_id=thread_id, is_board_admin=is_board_admin)
         # Re-extract memories only if board admin and thread was resolved
         if is_board_admin and thread.resolved_type:
             from forum_memory.services import extraction_service

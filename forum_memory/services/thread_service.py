@@ -294,6 +294,8 @@ def add_comment(session: Session, data: CommentCreate, author_id: UUID | None, i
     thread = session.get(Thread, data.thread_id)
     if not thread:
         raise ValueError("Thread not found")
+    if thread.status == ThreadStatus.DELETED:
+        raise ValueError("Cannot comment on a deleted thread")
 
     _validate_reply_target(session, data)
 
@@ -346,12 +348,14 @@ def _mark_best_answer(session: Session, comment_id: UUID) -> None:
         comment.is_best_answer = True
 
 
-def toggle_upvote(session: Session, comment_id: UUID, user_id: UUID) -> tuple[Comment, bool]:
+def toggle_upvote(session: Session, comment_id: UUID, user_id: UUID, thread_id: UUID | None = None) -> tuple[Comment, bool]:
     """Toggle upvote on a comment. Returns (comment, voted)."""
     from forum_memory.models.vote import CommentVote
     comment = session.get(Comment, comment_id)
     if not comment:
         raise ValueError("Comment not found")
+    if thread_id and comment.thread_id != thread_id:
+        raise ValueError("Comment does not belong to this thread")
 
     existing = session.exec(
         select(CommentVote).where(CommentVote.comment_id == comment_id, CommentVote.user_id == user_id)
@@ -371,13 +375,15 @@ def toggle_upvote(session: Session, comment_id: UUID, user_id: UUID) -> tuple[Co
     return comment, voted
 
 
-def delete_comment(session: Session, comment_id: UUID, user_id: UUID, is_board_admin: bool = False) -> Thread:
+def delete_comment(session: Session, comment_id: UUID, user_id: UUID, thread_id: UUID | None = None, is_board_admin: bool = False) -> Thread:
     """Soft-delete a comment. Only comment author or board admin can delete.
     Returns the parent thread.
     """
     comment = session.get(Comment, comment_id)
     if not comment:
         raise ValueError("Comment not found")
+    if thread_id and comment.thread_id != thread_id:
+        raise ValueError("Comment does not belong to this thread")
     if comment.deleted_at:
         raise ValueError("Comment already deleted")
 
