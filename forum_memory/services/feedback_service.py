@@ -13,22 +13,27 @@ from forum_memory.services.memory_service import refresh_quality
 
 
 def submit_feedback(session: Session, memory_id: UUID, data: FeedbackCreate, user_id: UUID | None = None) -> Feedback:
-    # Prevent duplicate: same user + same memory + same feedback type
+    new_type = FeedbackType(data.feedback_type)
+
     if user_id:
+        # Prevent duplicate: same user + same memory + same feedback type
         existing = session.exec(
             select(Feedback).where(
                 Feedback.memory_id == memory_id,
                 Feedback.user_id == user_id,
-                Feedback.feedback_type == FeedbackType(data.feedback_type),
+                Feedback.feedback_type == new_type,
             )
         ).first()
         if existing:
             return existing  # Idempotent — don't double-count
 
+        # Auto-withdraw other feedback types from same user on same memory
+        _withdraw_other_types(session, memory_id, user_id, new_type)
+
     fb = Feedback(
         memory_id=memory_id,
         user_id=user_id,
-        feedback_type=FeedbackType(data.feedback_type),
+        feedback_type=new_type,
         comment=data.comment,
     )
     session.add(fb)
@@ -37,6 +42,21 @@ def submit_feedback(session: Session, memory_id: UUID, data: FeedbackCreate, use
     session.refresh(fb)
     refresh_quality(session, memory_id)
     return fb
+
+
+def _withdraw_other_types(
+    session: Session, memory_id: UUID, user_id: UUID, keep_type: FeedbackType,
+) -> None:
+    """Remove any existing feedback of different types from same user on same memory."""
+    stmt = select(Feedback).where(
+        Feedback.memory_id == memory_id,
+        Feedback.user_id == user_id,
+        Feedback.feedback_type != keep_type,
+    )
+    old_feedbacks = list(session.exec(stmt).all())
+    for old_fb in old_feedbacks:
+        _decrement_counter(session, memory_id, old_fb.feedback_type.value)
+        session.delete(old_fb)
 
 
 def list_feedback(session: Session, memory_id: UUID) -> list[Feedback]:
