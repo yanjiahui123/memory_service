@@ -103,20 +103,31 @@ def list_contradictions(
     namespace_ids: list[UUID] | None = None,
 ) -> tuple[list[MemoryRelation], int]:
     """List CONTRADICTS relations, optionally filtered by namespace(s)."""
-    stmt = select(MemoryRelation).where(
-        MemoryRelation.relation_type == RelationType.CONTRADICTS
-    )
-    if namespace_id:
-        stmt = stmt.join(
-            Memory, MemoryRelation.source_memory_id == Memory.id
-        ).where(Memory.namespace_id == namespace_id)
-    elif namespace_ids:
-        stmt = stmt.join(
-            Memory, MemoryRelation.source_memory_id == Memory.id
-        ).where(Memory.namespace_id.in_(namespace_ids))
-    all_items = list(session.exec(stmt).all())
-    total = len(all_items)
-    paginated = list(session.exec(stmt.offset((page - 1) * size).limit(size)).all())
+    from sqlmodel import func
+
+    base_filter = MemoryRelation.relation_type == RelationType.CONTRADICTS
+    ns_join_needed = bool(namespace_id or namespace_ids)
+
+    # Count query
+    count_stmt = select(func.count()).select_from(MemoryRelation).where(base_filter)
+    if ns_join_needed:
+        count_stmt = count_stmt.join(Memory, MemoryRelation.source_memory_id == Memory.id)
+        if namespace_id:
+            count_stmt = count_stmt.where(Memory.namespace_id == namespace_id)
+        elif namespace_ids:
+            count_stmt = count_stmt.where(Memory.namespace_id.in_(namespace_ids))
+    total = session.exec(count_stmt).one()
+
+    # Page query
+    page_stmt = select(MemoryRelation).where(base_filter)
+    if ns_join_needed:
+        page_stmt = page_stmt.join(Memory, MemoryRelation.source_memory_id == Memory.id)
+        if namespace_id:
+            page_stmt = page_stmt.where(Memory.namespace_id == namespace_id)
+        elif namespace_ids:
+            page_stmt = page_stmt.where(Memory.namespace_id.in_(namespace_ids))
+    page_stmt = page_stmt.order_by(MemoryRelation.created_at.desc())
+    paginated = list(session.exec(page_stmt.offset((page - 1) * size).limit(size)).all())
     return paginated, total
 
 
@@ -181,6 +192,7 @@ def _resolve_keep_target(
     """Keep target (old), soft-delete source (new), create SUPERSEDES."""
     _soft_delete_memory(session, rel.source_memory_id, reason, operator_id)
     _create_supersedes_edge(session, rel.target_memory_id, rel.source_memory_id)
+    _clear_pending_flag(session, rel.target_memory_id)
     return f"保留旧记忆 {rel.target_memory_id}，淘汰新记忆 {rel.source_memory_id}"
 
 
@@ -194,13 +206,23 @@ def _resolve_keep_both(session: Session, rel: MemoryRelation) -> str:
 def _soft_delete_memory(
     session: Session, memory_id: UUID, reason: str, operator_id: UUID | None,
 ) -> None:
-    """Soft-delete a memory and log the operation."""
+    """Soft-delete a memory, remove from ES, and log the operation."""
     mem = session.get(Memory, memory_id)
     if not mem:
         return
+    from forum_memory.services.memory_service import _resolve_es_index
+    from forum_memory.services import es_service
+
+    index_name = _resolve_es_index(session, mem.namespace_id)
     mem.status = MemoryStatus.DELETED
     mem.indexed_at = None
     _log_resolution(session, mem, reason, operator_id)
+    # Flush DB state, then remove from ES (best-effort)
+    session.flush()
+    try:
+        es_service.delete_memory_doc(memory_id, index_name=index_name)
+    except Exception:
+        logger.warning("ES delete failed for memory %s during contradiction resolve", memory_id)
 
 
 def _create_supersedes_edge(session: Session, winner_id: UUID, loser_id: UUID) -> None:
