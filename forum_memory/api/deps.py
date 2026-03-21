@@ -210,16 +210,11 @@ def check_namespace_read_access(
     session: Session,
     user: User,
 ) -> None:
-    """Check if user can read content in this namespace.
-    PRIVATE: only members can read. PUBLIC/RESTRICTED: anyone can read."""
+    """Check if namespace exists. All boards are public — any authenticated user can read."""
     from forum_memory.models.namespace import Namespace
     ns = session.get(Namespace, ns_id)
     if not ns:
         raise HTTPException(404, "Namespace not found")
-    if ns.access_mode != "private":
-        return  # PUBLIC and RESTRICTED allow reading by anyone
-    if not _is_namespace_member(ns_id, session, user):
-        raise HTTPException(403, "此板块为私有板块，仅成员可访问")
 
 
 def check_namespace_write_access(
@@ -227,13 +222,8 @@ def check_namespace_write_access(
     session: Session,
     user: User,
 ) -> None:
-    """Check if user can post/create content in this namespace.
-    RESTRICTED/PRIVATE: only members can write. PUBLIC: anyone can write."""
+    """Check if namespace exists. All boards are public — any authenticated user can write."""
     from forum_memory.models.namespace import Namespace
     ns = session.get(Namespace, ns_id)
     if not ns:
         raise HTTPException(404, "Namespace not found")
-    if ns.access_mode == "public":
-        return  # PUBLIC allows writing by anyone
-    if not _is_namespace_member(ns_id, session, user):
-        raise HTTPException(403, "此板块仅成员可发帖")
