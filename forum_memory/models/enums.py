@@ -105,6 +105,7 @@ class ExtractionStatus(str, Enum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
+    COMPLETED_EMPTY = "COMPLETED_EMPTY"
     FAILED = "FAILED"
 
 

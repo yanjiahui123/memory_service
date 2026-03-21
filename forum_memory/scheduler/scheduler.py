@@ -19,6 +19,7 @@ from forum_memory.scheduler.maintenance_tasks import (
     refresh_quality,
     repair_es_sync,
     reconcile_comment_counts,
+    retry_failed_extractions,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,14 @@ def init_scheduler() -> None:
         trigger=CronTrigger(hour=4, minute=0),
         id="comment_count_reconcile",
         name="Comment count reconciliation",
+    )
+
+    # Scheduled: retry failed/empty extractions (every hour)
+    _scheduler.add_job(
+        retry_failed_extractions,
+        trigger=IntervalTrigger(hours=1),
+        id="retry_failed_extractions",
+        name="Retry failed extractions",
     )
 
     _scheduler.start()

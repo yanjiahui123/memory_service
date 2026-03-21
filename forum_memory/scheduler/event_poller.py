@@ -65,7 +65,9 @@ def poll_and_extract() -> None:
 
 def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
     """Run extraction for one event and mark it processed."""
-    from forum_memory.services.extraction_service import run_extraction
+    from forum_memory.services.extraction_service import (
+        run_extraction, has_reached_retry_limit,
+    )
 
     with Session(engine) as session:
         try:
@@ -78,11 +80,8 @@ def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
             )
         except IntegrityError:
             # Unique constraint violation: an IN_PROGRESS record already exists.
-            # Must rollback before the session can be reused.
             session.rollback()
             if _is_extraction_stale(session, source_type, source_id):
-                # Stale IN_PROGRESS (>30 min) — likely a crashed run.
-                # Don't mark processed; next poll will clean up and retry.
                 logger.warning(
                     "[scheduler:extraction_poller] Stale IN_PROGRESS for %s/%s, will retry next poll",
                     source_type, source_id,
@@ -92,6 +91,17 @@ def _extract_one(source_type: str, source_id: UUID, event_id: UUID) -> None:
                 "[scheduler:extraction_poller] Extraction already in progress for %s/%s, skipping",
                 source_type, source_id,
             )
+        except Exception:
+            # Pipeline error (LLM failure etc.) — check retry limit before re-queuing
+            session.rollback()
+            if has_reached_retry_limit(session, source_type, source_id):
+                logger.error(
+                    "[scheduler:extraction_poller] %s/%s reached retry limit, giving up",
+                    source_type, source_id,
+                )
+            else:
+                # Leave event unprocessed so next poll retries
+                return
 
         _mark_event_processed(session, event_id)
 

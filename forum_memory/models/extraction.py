@@ -20,5 +20,6 @@ class ExtractionRecord(UUIDMixin, TimestampMixin, table=True):
     source_id: UUID = Field(index=True)
     namespace_id: UUID = Field(foreign_key="memo_namespaces.id", index=True)
     status: ExtractionStatus = Field(default=ExtractionStatus.PENDING)
+    retry_count: int = Field(default=0)
     memory_ids_created: str | None = Field(default=None)
     error_message: str | None = Field(default=None)

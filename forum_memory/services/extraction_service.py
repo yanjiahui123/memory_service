@@ -31,6 +31,8 @@ from forum_memory.providers import get_provider
 
 logger = logging.getLogger(__name__)
 
+MAX_RETRY_COUNT = 3
+
 
 def re_extract(session: Session, source_type: str, source_id: UUID) -> list[UUID]:
     """Clear old extraction record and re-run extraction pipeline.
@@ -85,12 +87,19 @@ def run_extraction(session: Session, source_type: str, source_id: UUID) -> list[
     if ctx is None:
         raise ValueError(f"Source {source_type}/{source_id} not found or not ready")
 
-    cleanup_failed_record(session, source_type, source_id)
+    prev_retry = _cleanup_retryable_record(session, source_type, source_id)
 
-    record = create_record(session, ctx)
+    record = _create_record(session, ctx, prev_retry)
     try:
         memory_ids = _execute_pipeline(session, ctx, record)
-        record.status = ExtractionStatus.COMPLETED
+        if memory_ids:
+            record.status = ExtractionStatus.COMPLETED
+        else:
+            record.status = ExtractionStatus.COMPLETED_EMPTY
+            logger.warning(
+                "Extraction produced 0 memories for %s/%s (retry %d/%d)",
+                source_type, source_id, record.retry_count, MAX_RETRY_COUNT,
+            )
         record.memory_ids_created = ",".join(str(mid) for mid in memory_ids)
         session.commit()
         return memory_ids
@@ -103,7 +112,7 @@ def run_extraction(session: Session, source_type: str, source_id: UUID) -> list[
 
 
 def already_extracted(session: Session, source_type: str, source_id: UUID) -> bool:
-    """Check if extraction has already completed successfully."""
+    """Check if extraction has already completed successfully (with memories)."""
     stmt = select(ExtractionRecord).where(
         ExtractionRecord.source_type == source_type,
         ExtractionRecord.source_id == source_id,
@@ -112,24 +121,42 @@ def already_extracted(session: Session, source_type: str, source_id: UUID) -> bo
     return session.exec(stmt).first() is not None
 
 
-def cleanup_failed_record(session: Session, source_type: str, source_id: UUID) -> None:
-    """Remove FAILED and stale IN_PROGRESS extraction records to allow retry.
-
-    IN_PROGRESS records older than 30 minutes are considered stale (process crashed).
-    """
-    stale_cutoff = datetime.now() - timedelta(minutes=30)
+def has_reached_retry_limit(session: Session, source_type: str, source_id: UUID) -> bool:
+    """Check if extraction has exhausted all retries (FAILED or COMPLETED_EMPTY)."""
     stmt = select(ExtractionRecord).where(
         ExtractionRecord.source_type == source_type,
         ExtractionRecord.source_id == source_id,
+        ExtractionRecord.status.in_([ExtractionStatus.FAILED, ExtractionStatus.COMPLETED_EMPTY]),
+        ExtractionRecord.retry_count >= MAX_RETRY_COUNT,
+    )
+    return session.exec(stmt).first() is not None
+
+
+def _cleanup_retryable_record(session: Session, source_type: str, source_id: UUID) -> int:
+    """Remove retryable extraction records and return the previous retry_count.
+
+    Retryable: FAILED, COMPLETED_EMPTY (under retry limit), stale IN_PROGRESS (>30 min).
+    """
+    stale_cutoff = datetime.now() - timedelta(minutes=30)
+    retryable = (
         (ExtractionRecord.status == ExtractionStatus.FAILED) |
+        (ExtractionRecord.status == ExtractionStatus.COMPLETED_EMPTY) |
         (
             (ExtractionRecord.status == ExtractionStatus.IN_PROGRESS) &
             (ExtractionRecord.created_at < stale_cutoff)
-        ),
+        )
     )
+    stmt = select(ExtractionRecord).where(
+        ExtractionRecord.source_type == source_type,
+        ExtractionRecord.source_id == source_id,
+        retryable,
+    )
+    prev_retry = 0
     for rec in session.exec(stmt).all():
+        prev_retry = max(prev_retry, rec.retry_count)
         session.delete(rec)
     session.flush()
+    return prev_retry
 
 
 def rollback_partial_memories(session: Session, source_id: UUID, since: datetime) -> None:
@@ -153,12 +180,13 @@ def rollback_partial_memories(session: Session, source_id: UUID, since: datetime
         logger.info("Rolled back %d partial memories for source %s", len(memories), source_id)
 
 
-def create_record(session: Session, ctx: SourceContext) -> ExtractionRecord:
+def _create_record(session: Session, ctx: SourceContext, prev_retry: int = 0) -> ExtractionRecord:
     record = ExtractionRecord(
         source_type=ctx.source_type,
         source_id=ctx.source_id,
         namespace_id=ctx.namespace_id,
         status=ExtractionStatus.IN_PROGRESS,
+        retry_count=prev_retry + 1 if prev_retry > 0 else 0,
     )
     session.add(record)
     session.commit()

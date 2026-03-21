@@ -68,3 +68,45 @@ def reconcile_comment_counts() -> None:
         count = _reconcile(session)
     if count:
         logger.info("[scheduler:comment_count] Reconciled %d threads", count)
+
+
+def retry_failed_extractions() -> None:
+    """Retry FAILED and COMPLETED_EMPTY extractions that haven't exhausted retries."""
+    from sqlmodel import select
+    from forum_memory.models.extraction import ExtractionRecord
+    from forum_memory.models.enums import ExtractionStatus
+    from forum_memory.services.extraction_service import (
+        run_extraction, MAX_RETRY_COUNT,
+    )
+
+    retryable_statuses = [ExtractionStatus.FAILED, ExtractionStatus.COMPLETED_EMPTY]
+    with Session(engine) as session:
+        stmt = (
+            select(ExtractionRecord)
+            .where(
+                ExtractionRecord.status.in_(retryable_statuses),
+                ExtractionRecord.retry_count < MAX_RETRY_COUNT,
+            )
+            .order_by(ExtractionRecord.created_at)
+            .limit(10)
+        )
+        records = list(session.exec(stmt).all())
+
+    if not records:
+        return
+
+    logger.info("[scheduler:retry_extraction] Found %d retryable records", len(records))
+    retried = 0
+    for rec in records:
+        try:
+            with Session(engine) as session:
+                run_extraction(session, rec.source_type, rec.source_id)
+                retried += 1
+        except Exception:
+            logger.exception(
+                "[scheduler:retry_extraction] Retry failed for %s/%s (attempt %d)",
+                rec.source_type, rec.source_id, rec.retry_count + 1,
+            )
+
+    if retried:
+        logger.info("[scheduler:retry_extraction] Successfully retried %d/%d", retried, len(records))
