@@ -84,10 +84,10 @@ def _reindex_memories(memories: list[Memory], index_name: str, provider) -> int:
             continue
 
         docs = [_build_index_doc(m, emb) for m, emb in zip(batch, embeddings)]
-        count = bulk_reindex(docs, batch_size=BATCH_SIZE, index_name=index_name)
-        indexed += count
+        success, _failed_ids = bulk_reindex(docs, batch_size=BATCH_SIZE, index_name=index_name)
+        indexed += success
         logger.info("  Batch %d: indexed %d/%d (total: %d/%d)",
-                    i // BATCH_SIZE, count, len(batch), indexed, total)
+                    i // BATCH_SIZE, success, len(batch), indexed, total)
 
     return indexed
 

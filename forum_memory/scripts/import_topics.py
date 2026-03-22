@@ -81,7 +81,13 @@ def _parse_filename(filename: str) -> tuple[str, str | None]:
 
 
 def _get_or_create_user(session: Session, username: str) -> User:
-    """Idempotently find or create a placeholder imported user."""
+    """Idempotently find or create a placeholder imported user.
+
+    Uses INSERT … ON CONFLICT DO NOTHING + re-SELECT to avoid race
+    conditions when multiple threads create the same username concurrently.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     existing = session.exec(select(User).where(User.username == username)).first()
     if existing:
         return existing
@@ -101,7 +107,14 @@ def _get_or_create_user(session: Session, username: str) -> User:
         is_active=True,
     )
     session.add(user)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        existing = session.exec(select(User).where(User.username == username)).first()
+        if existing:
+            return existing
+        raise
     return user
 
 
