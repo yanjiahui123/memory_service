@@ -19,6 +19,18 @@ from forum_memory.core.prompts import AI_ANSWER_SYSTEM_V2, AI_ANSWER_USER_V2
 logger = logging.getLogger(__name__)
 
 
+def _build_sort_clause(sort: str | None):
+    """Map sort key to SQLAlchemy ORDER BY clause."""
+    if sort == "active":
+        return Thread.updated_at.desc()
+    if sort == "views":
+        return Thread.view_count.desc()
+    if sort == "unanswered":
+        return Thread.comment_count.asc()
+    # default: newest
+    return Thread.created_at.desc()
+
+
 def list_threads(
     session: Session,
     namespace_id: UUID | None = None,
@@ -28,13 +40,14 @@ def list_threads(
     q: str | None = None,
     author_id: UUID | None = None,
     priority: str | None = None,
+    sort: str | None = None,
 ) -> list[Thread]:
     stmt = (
         select(Thread)
         .join(Namespace, Thread.namespace_id == Namespace.id)
         .where(Thread.status != ThreadStatus.DELETED)
         .where(Namespace.is_active.is_(True))
-        .order_by(Thread.created_at.desc())
+        .order_by(_build_sort_clause(sort))
     )
     if namespace_id:
         stmt = stmt.where(Thread.namespace_id == namespace_id)

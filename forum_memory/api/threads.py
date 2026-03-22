@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from forum_memory.api.deps import get_db, get_current_user, get_current_user_id, check_board_permission, check_namespace_read_access, check_namespace_write_access
 from forum_memory.api.rate_limit import limiter
 from forum_memory.models.user import User
+from forum_memory.models.thread import Comment
 from forum_memory.models.enums import SystemRole
 from forum_memory.models.namespace_moderator import NamespaceModerator
 from forum_memory.schemas.thread import ThreadCreate, ThreadRead, ThreadResolve, CommentCreate, CommentRead, UpvoteResponse
@@ -22,15 +23,24 @@ router = APIRouter(prefix="/threads", tags=["threads"])
 
 
 def _enrich_threads_with_authors(session: Session, threads: list) -> list[dict]:
-    """Batch-join author display names onto thread dicts."""
+    """Batch-join author display names and AI answer status onto thread dicts."""
+    thread_ids = [t.id for t in threads]
     author_ids = [t.author_id for t in threads if t.author_id]
     users = {}
     if author_ids:
         users = {u.id: u.display_name for u in session.exec(select(User).where(User.id.in_(author_ids))).all()}
+    # Batch check which threads have AI answers
+    ai_set: set = set()
+    if thread_ids:
+        ai_rows = session.exec(
+            select(Comment.thread_id).where(Comment.thread_id.in_(thread_ids), Comment.is_ai.is_(True)).distinct()
+        ).all()
+        ai_set = {row for row in ai_rows}
     result = []
     for t in threads:
         d = t.model_dump()
         d["author_display_name"] = users.get(t.author_id) if t.author_id else None
+        d["has_ai_answer"] = t.id in ai_set
         result.append(d)
     return result
 
@@ -43,11 +53,12 @@ def list_threads(
     author_id: UUID | None = None,
     priority: str | None = None,
     q: str | None = None,
+    sort: str | None = None,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     session: Session = Depends(get_db),
 ):
-    items = thread_service.list_threads(session, namespace_id, status, page, size, q, author_id=author_id, priority=priority)
+    items = thread_service.list_threads(session, namespace_id, status, page, size, q, author_id=author_id, priority=priority, sort=sort)
     total = thread_service.count_threads(session, namespace_id, status, q, author_id=author_id, priority=priority)
     response.headers["X-Total-Count"] = str(total)
     return _enrich_threads_with_authors(session, items)
