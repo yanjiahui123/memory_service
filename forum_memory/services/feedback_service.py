@@ -65,12 +65,14 @@ def list_feedback(session: Session, memory_id: UUID) -> list[Feedback]:
 
 
 def get_summary(session: Session, memory_id: UUID) -> FeedbackSummary:
-    counts = {}
-    for ft in FeedbackType:
-        stmt = select(func.count()).select_from(Feedback).where(
-            Feedback.memory_id == memory_id, Feedback.feedback_type == ft
-        )
-        counts[ft.value] = session.exec(stmt).one()
+    # Single GROUP BY query instead of N separate COUNT queries
+    stmt = (
+        select(Feedback.feedback_type, func.count())
+        .where(Feedback.memory_id == memory_id)
+        .group_by(Feedback.feedback_type)
+    )
+    rows = session.exec(stmt).all()
+    counts = {row[0].value: row[1] for row in rows}
 
     total = sum(counts.values())
     useful = counts.get("useful", 0)

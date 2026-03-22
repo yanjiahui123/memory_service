@@ -406,12 +406,15 @@ def transition_cold_memories(session: Session, cold_days: int = 180) -> int:
         )
     )
     memories = list(session.exec(stmt).all())
+    if not memories:
+        return 0
     # Collect ES cleanup info before modifying state
+    ns_cache = _build_ns_index_cache(session, memories)
     es_cleanup = []
     now = datetime.now(tz=timezone(timedelta(hours=8)))
     for m in memories:
         before = _snapshot(m)
-        es_cleanup.append((m.id, _resolve_es_index(session, m.namespace_id)))
+        es_cleanup.append((m.id, ns_cache.get(m.namespace_id)))
         m.status = MemoryStatus.COLD
         m.updated_at = now
         m.indexed_at = None
@@ -692,9 +695,10 @@ def reindex_unsynced_memories(session: Session, batch_size: int = 50) -> int:
         return 0
 
     now = datetime.now(tz=timezone(timedelta(hours=8)))
+    ns_cache = _build_ns_index_cache(session, memories)
     succeeded = []
     for m in memories:
-        index_name = _resolve_es_index(session, m.namespace_id)
+        index_name = ns_cache.get(m.namespace_id)
         if _index_to_es(m, index_name=index_name):
             m.indexed_at = now
             succeeded.append(m)

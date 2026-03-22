@@ -4,7 +4,7 @@ from uuid import UUID
 from datetime import datetime
 
 from sqlmodel import Field
-from sqlalchemy import Column, Text, JSON
+from sqlalchemy import Column, Index, Text, JSON
 
 from forum_memory.models.base import UUIDMixin, TimestampMixin
 from forum_memory.models.enums import Authority, MemoryStatus, KnowledgeType
@@ -13,6 +13,14 @@ from forum_memory.models.enums import Authority, MemoryStatus, KnowledgeType
 class Memory(UUIDMixin, TimestampMixin, table=True):
     """Single knowledge unit extracted from resolved threads."""
     __tablename__ = "memo_memories"
+    __table_args__ = (
+        # Composite: most list/count queries filter (namespace_id, status)
+        Index("ix_memory_namespace_status", "namespace_id", "status"),
+        # ES repair sensor: WHERE status=ACTIVE AND indexed_at IS NULL
+        Index("ix_memory_indexed_at", "indexed_at"),
+        # Quality alerts: WHERE pending_human_confirm = TRUE
+        Index("ix_memory_pending_confirm", "pending_human_confirm"),
+    )
 
     namespace_id: UUID = Field(foreign_key="memo_namespaces.id", index=True)
 
