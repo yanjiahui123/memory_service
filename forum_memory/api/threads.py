@@ -92,7 +92,7 @@ def resolve_thread(thread_id: UUID, data: ThreadResolve, session: Session = Depe
     thread = thread_service.get_thread(session, thread_id)
     if not thread:
         raise HTTPException(404, "Thread not found")
-    check_namespace_write_access(thread.namespace_id, session, user)
+    _check_thread_owner_or_admin(session, user, thread)
     try:
         return thread_service.resolve_thread(session, thread_id, data.best_answer_id)
     except ValueError as e:
@@ -104,13 +104,21 @@ def adopt_answer(thread_id: UUID, data: ThreadResolve, session: Session = Depend
     thread = thread_service.get_thread(session, thread_id)
     if not thread:
         raise HTTPException(404, "Thread not found")
-    check_namespace_write_access(thread.namespace_id, session, user)
+    _check_thread_owner_or_admin(session, user, thread)
     if not data.best_answer_id:
         raise HTTPException(400, "best_answer_id is required")
     try:
         return thread_service.adopt_answer(session, thread_id, data.best_answer_id)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+def _check_thread_owner_or_admin(session: Session, user: User, thread) -> None:
+    """只有帖子作者或板块管理员可以关闭/采纳帖子。"""
+    is_author = thread.author_id == user.id
+    is_admin = _is_board_admin_for_ns(session, user, thread.namespace_id)
+    if not is_author and not is_admin:
+        raise HTTPException(403, "只有帖子作者或管理员可以执行此操作")
 
 
 def _is_board_admin_for_ns(session: Session, user: User, namespace_id: UUID) -> bool:
