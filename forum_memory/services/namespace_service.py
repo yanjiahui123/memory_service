@@ -186,7 +186,11 @@ def get_stats(session: Session, ns_id: UUID) -> NamespaceStats:
 
 
 def _count_threads(session: Session, ns_id: UUID, status: ThreadStatus | None) -> int:
-    stmt = select(func.count()).select_from(Thread).where(Thread.namespace_id == ns_id)
+    stmt = (
+        select(func.count()).select_from(Thread)
+        .where(Thread.namespace_id == ns_id)
+        .where(Thread.status != ThreadStatus.DELETED)
+    )
     if status:
         stmt = stmt.where(Thread.status == status)
     return session.exec(stmt).one()
@@ -205,12 +209,17 @@ def _count_memories(session: Session, ns_id: UUID, authority: Authority | None) 
 
 def get_aggregate_stats(session: Session) -> NamespaceStats:
     """Compute aggregate stats across all active namespaces."""
-    total_threads = session.exec(select(func.count()).select_from(Thread)).one()
+    not_deleted = Thread.status != ThreadStatus.DELETED
+    total_threads = session.exec(
+        select(func.count()).select_from(Thread).where(not_deleted)
+    ).one()
     open_threads = session.exec(
-        select(func.count()).select_from(Thread).where(Thread.status == ThreadStatus.OPEN)
+        select(func.count()).select_from(Thread)
+        .where(not_deleted, Thread.status == ThreadStatus.OPEN)
     ).one()
     resolved_threads = session.exec(
-        select(func.count()).select_from(Thread).where(Thread.status == ThreadStatus.RESOLVED)
+        select(func.count()).select_from(Thread)
+        .where(not_deleted, Thread.status == ThreadStatus.RESOLVED)
     ).one()
     total_memories = session.exec(
         select(func.count()).select_from(Memory).where(Memory.status != MemoryStatus.DELETED)
@@ -225,7 +234,7 @@ def get_aggregate_stats(session: Session) -> NamespaceStats:
     if resolved_threads > 0:
         ai_count = session.exec(
             select(func.count()).select_from(Thread)
-            .where(Thread.resolved_type == ResolvedType.AI_RESOLVED)
+            .where(not_deleted, Thread.resolved_type == ResolvedType.AI_RESOLVED)
         ).one()
         ai_rate = round(ai_count / resolved_threads, 4)
 
@@ -252,7 +261,11 @@ def _ai_resolve_rate(session: Session, ns_id: UUID) -> float:
         return 0.0
     stmt = (
         select(func.count()).select_from(Thread)
-        .where(Thread.namespace_id == ns_id, Thread.resolved_type == ResolvedType.AI_RESOLVED)
+        .where(
+            Thread.namespace_id == ns_id,
+            Thread.status != ThreadStatus.DELETED,
+            Thread.resolved_type == ResolvedType.AI_RESOLVED,
+        )
     )
     ai_count = session.exec(stmt).one()
     return round(ai_count / resolved, 4)
