@@ -146,13 +146,30 @@ class ImportJobResponse(BaseModel):
     created_at: str
 
 
+def _fix_zip_filename(info: zipfile.ZipInfo) -> str:
+    """Fix garbled ZIP entry filenames caused by encoding mismatch.
+
+    ZIP files created on Windows with Chinese filenames often use GBK encoding,
+    but Python's zipfile module decodes non-UTF-8 entries as CP437 by default.
+    Re-encode to CP437 and decode as GBK to recover the original filename.
+    """
+    name = info.filename
+    if info.flag_bits & 0x800:
+        return name  # UTF-8 flag set — already correct
+    try:
+        return name.encode("cp437").decode("gbk")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return name  # fallback to original
+
+
 def _read_json_from_zip(zf: zipfile.ZipFile, tmp_path: Path) -> int:
     """Extract JSON files from an open ZipFile into tmp_path. Returns count."""
     count = 0
-    for member in zf.namelist():
-        if not member.lower().endswith(".json") or member.startswith("__"):
+    for info in zf.infolist():
+        fixed_name = _fix_zip_filename(info)
+        if not fixed_name.lower().endswith(".json") or fixed_name.startswith("__"):
             continue
-        (tmp_path / Path(member).name).write_bytes(zf.read(member))
+        (tmp_path / Path(fixed_name).name).write_bytes(zf.read(info))
         count += 1
     return count
 
