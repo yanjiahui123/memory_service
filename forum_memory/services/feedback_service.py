@@ -88,6 +88,17 @@ def get_summary(session: Session, memory_id: UUID) -> FeedbackSummary:
     )
 
 
+def get_my_feedback(session: Session, memory_id: UUID, user_id: UUID) -> str | None:
+    """Return the current user's feedback type on a memory, or None."""
+    fb = session.exec(
+        select(Feedback.feedback_type).where(
+            Feedback.memory_id == memory_id,
+            Feedback.user_id == user_id,
+        )
+    ).first()
+    return fb.value if fb else None
+
+
 def withdraw_feedback(session: Session, memory_id: UUID, feedback_type: str, user_id: UUID) -> bool:
     """Remove a user's own feedback on a memory. Returns True if feedback was found and removed."""
     stmt = select(Feedback).where(

@@ -30,6 +30,17 @@ def list_feedback(memory_id: UUID, session: Session = Depends(get_db)):
     return feedback_service.list_feedback(session, memory_id)
 
 
+@router.get("/memories/{memory_id}/feedback/mine")
+def my_feedback(
+    memory_id: UUID,
+    session: Session = Depends(get_db),
+    user_id: UUID = Depends(get_current_user_id),
+):
+    """Return the current user's feedback type on a memory."""
+    fb_type = feedback_service.get_my_feedback(session, memory_id, user_id)
+    return {"feedback_type": fb_type}
+
+
 @router.get("/memories/{memory_id}/feedback/summary", response_model=FeedbackSummary)
 def feedback_summary(memory_id: UUID, session: Session = Depends(get_db)):
     return feedback_service.get_summary(session, memory_id)
