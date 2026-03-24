@@ -321,6 +321,7 @@ def add_comment(session: Session, data: CommentCreate, author_id: UUID | None, i
     )
     session.add(comment)
     _increment_comment_count(session, data.thread_id)
+    _touch_thread_updated_at(session, data.thread_id)
 
     # flush 使 comment 行落库，后续 Notification FK 才能引用
     if not is_ai:
@@ -675,6 +676,13 @@ def _increment_comment_count(session: Session, thread_id: UUID) -> None:
     thread = session.get(Thread, thread_id)
     if thread:
         thread.comment_count += 1
+
+
+def _touch_thread_updated_at(session: Session, thread_id: UUID) -> None:
+    """Explicitly refresh thread.updated_at so the list page shows latest activity time."""
+    thread = session.get(Thread, thread_id)
+    if thread:
+        thread.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
 
 
 def _collect_cited_ids(ai_comments) -> set[UUID]:
