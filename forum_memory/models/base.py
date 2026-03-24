@@ -20,10 +20,8 @@ class UUIDMixin(SQLModel):
 class TimestampMixin(SQLModel):
     """Mixin that adds created_at and updated_at.
 
-    updated_at is automatically refreshed on every UPDATE via DB-level onupdate.
+    updated_at 不使用 DB-level onupdate，避免 view_count 等无关字段的
+    UPDATE 也刷新时间戳。需要刷新时由业务代码显式赋值。
     """
     created_at: datetime = Field(default_factory=_now_tz8)
-    updated_at: datetime = Field(
-        default_factory=_now_tz8,
-        sa_column_kwargs={"onupdate": _now_tz8},
-    )
+    updated_at: datetime = Field(default_factory=_now_tz8)
