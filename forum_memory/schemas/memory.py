@@ -46,7 +46,9 @@ class MemoryRead(BaseModel):
     outdated_count: int
     retrieve_count: int
     cite_count: int
+    resolved_citation_count: int = 0
     pending_human_confirm: bool
+    indexed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
