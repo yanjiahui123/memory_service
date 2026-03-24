@@ -230,13 +230,18 @@ def get_aggregate_stats(session: Session) -> NamespaceStats:
         .where(Memory.authority == Authority.LOCKED)
     ).one()
 
+    # AI resolve rate based on organic (non-imported) threads only
+    organic_resolved = session.exec(
+        select(func.count()).select_from(Thread)
+        .where(not_deleted, Thread.status == ThreadStatus.RESOLVED, Thread.is_imported.is_(False))
+    ).one()
     ai_rate = 0.0
-    if resolved_threads > 0:
+    if organic_resolved > 0:
         ai_count = session.exec(
             select(func.count()).select_from(Thread)
-            .where(not_deleted, Thread.resolved_type == ResolvedType.AI_RESOLVED)
+            .where(not_deleted, Thread.is_imported.is_(False), Thread.resolved_type == ResolvedType.AI_RESOLVED)
         ).one()
-        ai_rate = round(ai_count / resolved_threads, 4)
+        ai_rate = round(ai_count / organic_resolved, 4)
 
     pending_count = session.exec(
         select(func.count()).select_from(Memory)
@@ -256,16 +261,24 @@ def get_aggregate_stats(session: Session) -> NamespaceStats:
 
 
 def _ai_resolve_rate(session: Session, ns_id: UUID) -> float:
-    resolved = _count_threads(session, ns_id, ThreadStatus.RESOLVED)
-    if resolved == 0:
+    """AI resolve rate based on organic (non-imported) threads only."""
+    organic_resolved = session.exec(
+        select(func.count()).select_from(Thread)
+        .where(
+            Thread.namespace_id == ns_id,
+            Thread.status == ThreadStatus.RESOLVED,
+            Thread.is_imported.is_(False),
+        )
+    ).one()
+    if organic_resolved == 0:
         return 0.0
-    stmt = (
+    ai_count = session.exec(
         select(func.count()).select_from(Thread)
         .where(
             Thread.namespace_id == ns_id,
             Thread.status != ThreadStatus.DELETED,
+            Thread.is_imported.is_(False),
             Thread.resolved_type == ResolvedType.AI_RESOLVED,
         )
-    )
-    ai_count = session.exec(stmt).one()
-    return round(ai_count / resolved, 4)
+    ).one()
+    return round(ai_count / organic_resolved, 4)

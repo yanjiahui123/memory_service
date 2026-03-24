@@ -31,6 +31,9 @@ class Thread(UUIDMixin, TimestampMixin, table=True):
     knowledge_type: str | None = Field(default=None, max_length=50)
     environment: str | None = Field(default=None, max_length=200)
 
+    # Origin
+    is_imported: bool = Field(default=False, index=True)
+
     # Counters
     comment_count: int = Field(default=0)
     view_count: int = Field(default=0)

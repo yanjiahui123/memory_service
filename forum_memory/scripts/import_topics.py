@@ -260,6 +260,7 @@ def _persist_topic(
             content=data.get("question") or "",
             status=ThreadStatus.OPEN,
             tags=thread_tags if thread_tags else None,
+            is_imported=True,
         )
         session.add(thread)
         session.flush()

@@ -28,6 +28,7 @@ class ThreadRead(BaseModel):
     priority: str | None
     knowledge_type: str | None
     environment: str | None
+    is_imported: bool = False
     comment_count: int
     view_count: int
     created_at: datetime
