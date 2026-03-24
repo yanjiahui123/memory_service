@@ -8,6 +8,7 @@ from enum import Enum
 class ThreadStatus(str, Enum):
     OPEN = "OPEN"
     RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"              # 主动关闭（未采纳回答）
     TIMEOUT_CLOSED = "TIMEOUT_CLOSED"
     DELETED = "DELETED"
 
@@ -15,6 +16,7 @@ class ThreadStatus(str, Enum):
 class ResolvedType(str, Enum):
     AI_RESOLVED = "ai_resolved"
     HUMAN_RESOLVED = "human_resolved"
+    MANUAL_CLOSED = "manual_closed"  # 主动关闭，非解决
     TIMEOUT = "timeout"
 
 

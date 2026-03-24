@@ -99,6 +99,19 @@ def resolve_thread(thread_id: UUID, data: ThreadResolve, session: Session = Depe
         raise HTTPException(400, str(e)) from e
 
 
+@router.post("/{thread_id}/close", response_model=ThreadRead)
+def close_thread(thread_id: UUID, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """主动关闭帖子（不标记为已解决）。帖子作者或管理员可操作。"""
+    thread = thread_service.get_thread(session, thread_id)
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    _check_thread_owner_or_admin(session, user, thread)
+    try:
+        return thread_service.close_thread(session, thread_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @router.post("/{thread_id}/adopt-answer", response_model=ThreadRead)
 def adopt_answer(thread_id: UUID, data: ThreadResolve, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
     thread = thread_service.get_thread(session, thread_id)

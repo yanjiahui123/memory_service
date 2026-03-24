@@ -221,6 +221,23 @@ def reopen_thread(session: Session, thread_id: UUID) -> Thread:
     return thread
 
 
+def close_thread(session: Session, thread_id: UUID) -> Thread:
+    """Manually close thread without marking it as resolved."""
+    thread = session.get(Thread, thread_id)
+    if not thread:
+        raise ValueError("Thread not found")
+    if not can_transition(thread.status, ThreadStatus.CLOSED):
+        raise ValueError(f"Cannot close thread in {thread.status} state")
+
+    thread.status = ThreadStatus.CLOSED
+    thread.resolved_type = ResolvedType.MANUAL_CLOSED
+    thread.resolved_at = datetime.now(tz=timezone(timedelta(hours=8)))
+    _add_event(session, "thread.closed", "Thread", thread)
+    session.commit()
+    session.refresh(thread)
+    return thread
+
+
 def timeout_close_thread(session: Session, thread_id: UUID) -> Thread:
     thread = session.get(Thread, thread_id)
     if not thread:
