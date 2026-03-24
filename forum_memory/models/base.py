@@ -3,7 +3,6 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime
 from sqlmodel import SQLModel, Field
 
 _TZ8 = timezone(timedelta(hours=8))
@@ -26,5 +25,5 @@ class TimestampMixin(SQLModel):
     created_at: datetime = Field(default_factory=_now_tz8)
     updated_at: datetime = Field(
         default_factory=_now_tz8,
-        sa_column=Column(DateTime, default=_now_tz8, onupdate=_now_tz8),
+        sa_column_kwargs={"onupdate": _now_tz8},
     )
