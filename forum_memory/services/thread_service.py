@@ -222,19 +222,40 @@ def reopen_thread(session: Session, thread_id: UUID) -> Thread:
 
 
 def close_thread(session: Session, thread_id: UUID) -> Thread:
-    """Manually close thread without marking it as resolved."""
+    """Manually close a thread.
+
+    If the thread has an adopted best answer, it is marked as RESOLVED
+    (with the appropriate AI/HUMAN resolved type).  Otherwise it is
+    marked as CLOSED with MANUAL_CLOSED.
+    """
     thread = session.get(Thread, thread_id)
     if not thread:
         raise ValueError("Thread not found")
-    if not can_transition(thread.status, ThreadStatus.CLOSED):
+
+    has_best = thread.best_answer_id is not None
+    target_status = ThreadStatus.RESOLVED if has_best else ThreadStatus.CLOSED
+    if not can_transition(thread.status, target_status):
         raise ValueError(f"Cannot close thread in {thread.status} state")
 
-    thread.status = ThreadStatus.CLOSED
-    thread.resolved_type = ResolvedType.MANUAL_CLOSED
+    if has_best:
+        resolved_type = _determine_resolved_type(session, thread.best_answer_id)
+        event_type = "thread.resolved"
+        _mark_best_answer(session, thread.best_answer_id)
+    else:
+        resolved_type = ResolvedType.MANUAL_CLOSED
+        event_type = "thread.closed"
+
+    thread.status = target_status
+    thread.resolved_type = resolved_type
     thread.resolved_at = datetime.now(tz=timezone(timedelta(hours=8)))
-    _add_event(session, "thread.closed", "Thread", thread)
+    _add_event(session, event_type, "Thread", thread,
+               {"resolved_type": resolved_type.value})
     session.commit()
     session.refresh(thread)
+
+    if has_best:
+        _update_resolved_citations(session, thread_id)
+
     return thread
 
 
