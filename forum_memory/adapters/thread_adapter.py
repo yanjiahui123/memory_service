@@ -24,7 +24,7 @@ class ThreadSourceAdapter(SourceAdapter):
         return "thread"
 
     def event_types(self) -> tuple[str, ...]:
-        return ("thread.resolved", "thread.timeout_closed")
+        return ("thread.resolved", "thread.closed", "thread.timeout_closed")
 
     def load_context(self, session: Session, source_id: UUID) -> SourceContext | None:
         thread = session.get(Thread, source_id)
