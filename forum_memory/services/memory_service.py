@@ -599,11 +599,12 @@ def list_all_tags(
 
 
 def batch_get_memories(session: Session, ids: list[UUID]) -> list[Memory]:
-    """Fetch multiple memories by IDs."""
+    """Fetch multiple memories by IDs, preserving input order."""
     if not ids:
         return []
     stmt = select(Memory).where(Memory.id.in_(ids))
-    return list(session.exec(stmt).all())
+    memories_map = {m.id: m for m in session.exec(stmt).all()}
+    return [memories_map[mid] for mid in ids if mid in memories_map]
 
 
 def count_memories(
