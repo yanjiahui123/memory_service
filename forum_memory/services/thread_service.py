@@ -132,6 +132,11 @@ def create_thread(session: Session, data: ThreadCreate, author_id: UUID) -> Thre
     session.commit()
     session.refresh(thread)
 
+    # Notify namespace moderators about the new thread
+    from forum_memory.services.notification_service import notify_admins_on_new_thread
+    notify_admins_on_new_thread(session, thread)
+    session.commit()
+
     # AI 回答由前端 SSE 流式端点驱动（ThreadDetail 页面自动连接），
     # 此处不再提交后台任务，避免与 SSE 竞态导致双重 LLM 调用。
     return thread

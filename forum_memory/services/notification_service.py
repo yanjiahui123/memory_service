@@ -11,6 +11,7 @@ from forum_memory.models.notification import Notification
 from forum_memory.models.enums import ThreadStatus
 from forum_memory.models.thread import Thread, Comment
 from forum_memory.models.user import User
+from forum_memory.models.namespace_moderator import NamespaceModerator
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,22 @@ def _notify_reply_target(
         session, parent.author_id, comment.author_id,
         "reply_to_comment", parent.thread_id, comment.id,
     )
+
+
+def notify_admins_on_new_thread(session: Session, thread: Thread) -> None:
+    """Notify all namespace moderators when a new thread is created.
+
+    Skips the thread author if they are also a moderator.
+    """
+    stmt = select(NamespaceModerator.user_id).where(
+        NamespaceModerator.namespace_id == thread.namespace_id,
+    )
+    mod_user_ids = list(session.exec(stmt).all())
+    for mod_id in mod_user_ids:
+        create_notification(
+            session, mod_id, thread.author_id,
+            "new_thread_in_namespace", thread.id,
+        )
 
 
 # ── Queries ──────────────────────────────────────────────────────────────────
