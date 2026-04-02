@@ -71,7 +71,7 @@ def _resolve_user_from_cookie(request: Request, session: Session) -> User | None
 
     uid = user_info.get("uid", "").lower().strip()
     display_name = user_info.get("displayNameCn", "").strip()
-    email = user_info.get("email", "").strip()
+    email = user_info.get("email", "")[0] if user_info.get("email", "") else "None"
 
     if not uid:
         logger.warning("SSO cookie verified but uid is empty")

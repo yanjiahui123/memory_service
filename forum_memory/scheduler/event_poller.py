@@ -6,7 +6,7 @@ Replaces the Dagster source_extraction_sensor + extract_memories_job.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -112,7 +112,7 @@ def _is_extraction_stale(
     session: Session, source_type: str, source_id: UUID,
 ) -> bool:
     """Check if an IN_PROGRESS extraction record is stale (>30 min)."""
-    stale_cutoff = datetime.now() - timedelta(minutes=30)
+    stale_cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(minutes=30)
     stmt = select(ExtractionRecord).where(
         ExtractionRecord.source_type == source_type,
         ExtractionRecord.source_id == source_id,

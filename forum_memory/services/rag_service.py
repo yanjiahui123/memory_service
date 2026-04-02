@@ -101,6 +101,7 @@ def query_rag(
             headers={"Content-Type": "application/json"},
             json={"kb_sn_list": kb_sn_list, "question": question, "uid": uid, "top_k": top_k},
             timeout=settings.rag_timeout,
+            verify=False
         )
         resp.raise_for_status()
         data = resp.json()
