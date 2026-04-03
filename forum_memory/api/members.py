@@ -50,7 +50,10 @@ def add_member(
     employee_id = data.employee_id.strip()
     if not employee_id:
         raise HTTPException(400, "工号不能为空")
-    return membership_service.add_member(session, ns_id, employee_id, data.role)
+    try:
+        return membership_service.add_member(session, ns_id, employee_id, data.role)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
 
 
 @router.post("/namespaces/{ns_id}/members/batch")

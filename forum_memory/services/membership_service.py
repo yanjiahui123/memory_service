@@ -65,21 +65,26 @@ def add_member(
 
 
 def _find_or_create_user(session: Session, employee_id: str) -> User:
-    """Find user by employee_id or create with info from external directory."""
+    """Find user by employee_id or create with info from external directory.
+
+    Raises ValueError if user not found locally and external lookup fails.
+    """
     stmt = select(User).where(User.employee_id == employee_id)
     user = session.exec(stmt).first()
     if user:
         return user
-    # Try external lookup for name/dept
+    # Must verify via external directory before creating
     info = _lookup_external(employee_id)
+    if not info:
+        raise ValueError(f"用户 {employee_id} 不存在")
     user = User(
         employee_id=employee_id,
         username=employee_id,
-        display_name=info.get("name", employee_id) if info else employee_id,
-        email=info.get("email") if info else None,
-        dept_code=info.get("dept_code") if info else None,
-        dept_path=info.get("dept_path") if info else None,
-        dept_levels=info.get("dept_levels") if info else None,
+        display_name=info.get("name", employee_id),
+        email=info.get("email"),
+        dept_code=info.get("dept_code"),
+        dept_path=info.get("dept_path"),
+        dept_levels=info.get("dept_levels"),
     )
     session.add(user)
     session.flush()
