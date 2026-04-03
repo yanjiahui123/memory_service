@@ -309,7 +309,13 @@ def _validate_invite(invite: NamespaceInvite) -> None:
     """Check invite is active, not expired, and not exhausted."""
     if not invite.is_active:
         raise ValueError("邀请链接已撤销")
-    if invite.expires_at and datetime.now(tz=_TZ8) > invite.expires_at:
-        raise ValueError("邀请链接已过期")
+    if invite.expires_at:
+        exp = invite.expires_at
+        now = datetime.now(tz=_TZ8)
+        # 兼容 naive datetime：如果数据库返回无时区信息，补上 UTC+8
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=_TZ8)
+        if now > exp:
+            raise ValueError("邀请链接已过期")
     if invite.max_uses is not None and invite.use_count >= invite.max_uses:
         raise ValueError("邀请链接已达到使用上限")
