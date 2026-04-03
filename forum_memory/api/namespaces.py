@@ -11,6 +11,7 @@ from forum_memory.models.thread import Thread
 from forum_memory.models.enums import ThreadStatus
 from forum_memory.models.user import User
 from forum_memory.models.namespace_moderator import NamespaceModerator
+from forum_memory.models.board_follow import BoardFollow
 from forum_memory.models.enums import SystemRole
 from forum_memory.schemas.namespace import NamespaceCreate, NamespaceUpdate, NamespaceRead, NamespaceStats, DictionaryUpdate
 from forum_memory.schemas.user import UserRead
@@ -248,3 +249,64 @@ def remove_moderator(
         if target_user and target_user.role == SystemRole.BOARD_ADMIN:
             target_user.role = SystemRole.USER
             session.commit()
+
+
+# ── Board follow/subscribe ───────────────────────────────────
+
+@router.post("/{ns_id}/follow", status_code=201)
+def follow_board(
+    ns_id: UUID,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """关注板块。"""
+    ns = namespace_service.get_namespace(session, ns_id)
+    if not ns:
+        raise HTTPException(404, "板块不存在")
+    existing = session.exec(
+        select(BoardFollow).where(
+            BoardFollow.user_id == user.id,
+            BoardFollow.namespace_id == ns_id,
+        )
+    ).first()
+    if existing:
+        return {"followed": True}
+    follow = BoardFollow(user_id=user.id, namespace_id=ns_id)
+    session.add(follow)
+    session.commit()
+    return {"followed": True}
+
+
+@router.delete("/{ns_id}/follow", status_code=200)
+def unfollow_board(
+    ns_id: UUID,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """取消关注板块。"""
+    existing = session.exec(
+        select(BoardFollow).where(
+            BoardFollow.user_id == user.id,
+            BoardFollow.namespace_id == ns_id,
+        )
+    ).first()
+    if existing:
+        session.delete(existing)
+        session.commit()
+    return {"followed": False}
+
+
+@router.get("/{ns_id}/follow", response_model=dict)
+def check_follow_status(
+    ns_id: UUID,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """检查是否已关注板块。"""
+    existing = session.exec(
+        select(BoardFollow).where(
+            BoardFollow.user_id == user.id,
+            BoardFollow.namespace_id == ns_id,
+        )
+    ).first()
+    return {"followed": existing is not None}

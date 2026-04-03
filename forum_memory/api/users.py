@@ -9,6 +9,7 @@ from forum_memory.api.deps import get_db, get_current_user, require_admin, requi
 from forum_memory.models.user import User
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.namespace_moderator import NamespaceModerator
+from forum_memory.models.board_follow import BoardFollow
 from forum_memory.models.enums import SystemRole
 from forum_memory.schemas.user import UserCreate, UserUpdate, UserRead
 from forum_memory.schemas.namespace import NamespaceRead
@@ -37,6 +38,22 @@ def get_my_managed_namespaces(
         .join(NamespaceModerator, NamespaceModerator.namespace_id == Namespace.id)
         .where(NamespaceModerator.user_id == user.id)
         .where(Namespace.is_active.is_(True))
+    )
+    return list(session.exec(stmt).all())
+
+
+@router.get("/me/followed-boards", response_model=list[NamespaceRead])
+def get_my_followed_boards(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_db),
+):
+    """返回当前用户关注的板块列表。"""
+    stmt = (
+        select(Namespace)
+        .join(BoardFollow, BoardFollow.namespace_id == Namespace.id)
+        .where(BoardFollow.user_id == user.id)
+        .where(Namespace.is_active.is_(True))
+        .order_by(BoardFollow.created_at)
     )
     return list(session.exec(stmt).all())
 

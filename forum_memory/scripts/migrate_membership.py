@@ -65,6 +65,25 @@ STATEMENTS = [
     CREATE INDEX IF NOT EXISTS ix_memo_ns_invites_ns_id
     ON memo_namespace_invites(namespace_id);
     """,
+    # 4. Create board follows table
+    """
+    CREATE TABLE IF NOT EXISTS memo_user_board_follows (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES memo_users(id),
+        namespace_id UUID NOT NULL REFERENCES memo_namespaces(id),
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        CONSTRAINT uq_user_board_follow UNIQUE (user_id, namespace_id)
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_memo_board_follows_user
+    ON memo_user_board_follows(user_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_memo_board_follows_ns
+    ON memo_user_board_follows(namespace_id);
+    """,
 ]
 
 

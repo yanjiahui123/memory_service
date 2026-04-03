@@ -13,9 +13,10 @@ from forum_memory.models.vote import CommentVote
 from forum_memory.models.memory_relation import MemoryRelation
 from forum_memory.models.notification import Notification
 from forum_memory.models.namespace_invite import NamespaceInvite
+from forum_memory.models.board_follow import BoardFollow
 
 __all__ = [
-    "User", "Namespace", "NamespaceModerator", "NamespaceInvite",
+    "User", "Namespace", "NamespaceModerator", "NamespaceInvite", "BoardFollow",
     "Thread", "Comment",
     "Memory", "ExtractionRecord", "Feedback",
     "OperationLog", "DomainEvent", "CommentVote", "MemoryRelation",
