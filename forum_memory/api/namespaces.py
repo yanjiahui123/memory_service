@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
@@ -27,11 +27,18 @@ class ModeratorAdd(BaseModel):
 
 @router.get("", response_model=list[NamespaceRead])
 def list_namespaces(
+    response: Response,
+    page: int = 1,
+    size: int = 20,
     session: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """查看板块列表（PRIVATE 板块仅成员可见）。"""
-    namespaces = namespace_service.list_namespaces(session, user)
+    """查看板块列表（PRIVATE 板块仅成员可见，支持分页）。"""
+    namespaces, total = namespace_service.list_namespaces(
+        session, user, page=page, size=size,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
     ns_ids = [ns.id for ns in namespaces]
     total_counts: dict = {}
     open_counts: dict = {}

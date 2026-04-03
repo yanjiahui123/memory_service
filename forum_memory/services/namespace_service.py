@@ -41,11 +41,8 @@ def generate_namespace_name(display_name: str) -> str:
     return f"{slug}_{short_id}"
 
 
-def list_namespaces(session: Session, user: User | None = None) -> list[Namespace]:
-    """Return active namespaces visible to the user.
-
-    PRIVATE boards are hidden from non-members. SUPER_ADMIN sees all.
-    """
+def _visible_ns_stmt(user: User | None):
+    """Build base statement for namespaces visible to the user."""
     stmt = select(Namespace).where(Namespace.is_active.is_(True))
     if user and user.role != SystemRole.SUPER_ADMIN:
         member_ns = select(NamespaceModerator.namespace_id).where(
@@ -58,7 +55,29 @@ def list_namespaces(session: Session, user: User | None = None) -> list[Namespac
                 Namespace.id.in_(member_ns),
             )
         )
-    return list(session.exec(stmt).all())
+    return stmt
+
+
+def list_namespaces(
+    session: Session,
+    user: User | None = None,
+    page: int = 1,
+    size: int = 20,
+) -> tuple[list[Namespace], int]:
+    """Return paginated active namespaces visible to the user.
+
+    Returns (items, total_count).
+    """
+    base = _visible_ns_stmt(user)
+    total = session.exec(
+        select(func.count()).select_from(base.subquery())
+    ).one()
+    items = list(session.exec(
+        base.order_by(Namespace.created_at.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+    ).all())
+    return items, total
 
 
 def get_namespace(session: Session, ns_id: UUID) -> Namespace | None:
