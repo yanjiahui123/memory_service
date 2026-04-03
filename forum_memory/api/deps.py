@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 from forum_memory.database import get_session
 from forum_memory.models.user import User
 from forum_memory.models.namespace_moderator import NamespaceModerator
-from forum_memory.models.enums import SystemRole
+from forum_memory.models.enums import SystemRole, AccessMode, MemberRole
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def _resolve_user_from_cookie(request: Request, session: Session) -> User | None
 
     uid = user_info.get("uid", "").lower().strip()
     display_name = user_info.get("displayNameCn", "").strip()
-    email = user_info.get("email", "")[0] if user_info.get("email", "") else "None"
+    email = user_info.get("email", "").strip()
 
     if not uid:
         logger.warning("SSO cookie verified but uid is empty")
@@ -177,21 +177,25 @@ def check_board_permission(
     session: Session,
     user: User,
 ) -> None:
-    """检查用户是否有板块管理权限（超级管理员或该板块的管理员）。"""
+    """检查用户是否有板块管理权限（超级管理员、owner 或 moderator 角色）。"""
     if user.role == SystemRole.SUPER_ADMIN:
         return
-    if user.role == SystemRole.BOARD_ADMIN:
-        stmt = select(NamespaceModerator).where(
-            NamespaceModerator.user_id == user.id,
-            NamespaceModerator.namespace_id == ns_id,
-        )
-        if session.exec(stmt).first():
-            return
+    from forum_memory.models.namespace import Namespace
+    ns = session.get(Namespace, ns_id)
+    if ns and ns.owner_id == user.id:
+        return
+    stmt = select(NamespaceModerator).where(
+        NamespaceModerator.user_id == user.id,
+        NamespaceModerator.namespace_id == ns_id,
+        NamespaceModerator.role == MemberRole.MODERATOR,
+    )
+    if session.exec(stmt).first():
+        return
     raise HTTPException(403, "需要板块管理权限")
 
 
 def _is_namespace_member(ns_id: UUID, session: Session, user: User) -> bool:
-    """Check if user is a member of the namespace (owner, moderator, or super_admin)."""
+    """Check if user is a member of the namespace (any role: owner, moderator, member)."""
     from forum_memory.models.namespace import Namespace
     if user.role == SystemRole.SUPER_ADMIN:
         return True
@@ -210,11 +214,14 @@ def check_namespace_read_access(
     session: Session,
     user: User,
 ) -> None:
-    """Check if namespace exists. All boards are public — any authenticated user can read."""
+    """Check read access. PRIVATE boards require membership."""
     from forum_memory.models.namespace import Namespace
     ns = session.get(Namespace, ns_id)
     if not ns:
         raise HTTPException(404, "Namespace not found")
+    if ns.access_mode == AccessMode.PRIVATE:
+        if not _is_namespace_member(ns_id, session, user):
+            raise HTTPException(403, "该板块仅成员可访问")
 
 
 def check_namespace_write_access(
@@ -222,8 +229,11 @@ def check_namespace_write_access(
     session: Session,
     user: User,
 ) -> None:
-    """Check if namespace exists. All boards are public — any authenticated user can write."""
+    """Check write access. RESTRICTED and PRIVATE boards require membership."""
     from forum_memory.models.namespace import Namespace
     ns = session.get(Namespace, ns_id)
     if not ns:
         raise HTTPException(404, "Namespace not found")
+    if ns.access_mode in (AccessMode.RESTRICTED, AccessMode.PRIVATE):
+        if not _is_namespace_member(ns_id, session, user):
+            raise HTTPException(403, "该板块仅成员可发帖")

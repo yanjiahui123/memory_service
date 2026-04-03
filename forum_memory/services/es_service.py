@@ -172,7 +172,7 @@ def hybrid_search(
     namespace_id: UUID,
     query_text: str,
     query_embedding: list[float],
-    limit: int = 100,
+    limit: int = 50,
     status_filter: str = "ACTIVE",
     index_name: str | None = None,
 ) -> list[dict]:
@@ -197,9 +197,7 @@ def hybrid_search(
             size=limit,
             query={
                 "bool": {
-                    "should": [
-                        {"match": {"content": query_text}}
-                    ],
+                    "must": {"match": {"content": query_text}},
                     "filter": filter_clauses,
                 }
             },

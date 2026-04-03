@@ -73,6 +73,12 @@ class AccessMode(str, Enum):
     PRIVATE = "private"        # Only members can read and post
 
 
+class MemberRole(str, Enum):
+    """Role within a namespace membership."""
+    MODERATOR = "moderator"    # Can manage board settings + members
+    MEMBER = "member"          # Can read/write in private/restricted boards
+
+
 # ── Feedback enums ────────────────────────────────────────────
 
 class FeedbackType(str, Enum):

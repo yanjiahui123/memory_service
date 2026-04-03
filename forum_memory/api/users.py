@@ -5,13 +5,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
-from forum_memory.api.deps import get_db, get_current_user, require_admin
+from forum_memory.api.deps import get_db, get_current_user, require_admin, require_any_admin
 from forum_memory.models.user import User
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.namespace_moderator import NamespaceModerator
 from forum_memory.models.enums import SystemRole
 from forum_memory.schemas.user import UserCreate, UserUpdate, UserRead
 from forum_memory.schemas.namespace import NamespaceRead
+from forum_memory.services import user_directory_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -96,3 +97,33 @@ def _apply_user_updates(user: User, data: UserUpdate) -> None:
         user.email = data.email
     if data.role is not None:
         user.role = SystemRole(data.role)
+
+
+# ── User search & department listing ─────────────────────────
+
+@router.get("/search")
+def search_users_api(
+    q: str,
+    admin: User = Depends(require_any_admin),
+):
+    """模糊搜索外部用户目录，返回候选列表。"""
+    if not q.strip():
+        return []
+    return user_directory_service.search_users(q.strip(), page_size=20)
+
+
+@router.get("/departments")
+def list_departments(
+    session: Session = Depends(get_db),
+    admin: User = Depends(require_any_admin),
+):
+    """返回本地数据库中所有已知部门（去重）。"""
+    stmt = (
+        select(User.dept_code, User.dept_path)
+        .where(User.dept_code.isnot(None))
+        .where(User.is_active.is_(True))
+        .distinct()
+        .order_by(User.dept_path)
+    )
+    rows = session.exec(stmt).all()
+    return [{"dept_code": code, "dept_path": path} for code, path in rows]

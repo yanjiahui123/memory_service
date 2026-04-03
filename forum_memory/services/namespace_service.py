@@ -5,12 +5,16 @@ import logging
 import uuid as _uuid
 from uuid import UUID
 
-from sqlmodel import Session, select, func
+from sqlmodel import Session, select, func, or_
 
 from forum_memory.models.namespace import Namespace
+from forum_memory.models.namespace_moderator import NamespaceModerator
 from forum_memory.models.thread import Thread
 from forum_memory.models.memory import Memory
-from forum_memory.models.enums import ThreadStatus, Authority, ResolvedType, MemoryStatus
+from forum_memory.models.user import User
+from forum_memory.models.enums import (
+    ThreadStatus, Authority, ResolvedType, MemoryStatus, AccessMode, SystemRole,
+)
 from forum_memory.schemas.namespace import NamespaceCreate, NamespaceUpdate, NamespaceStats
 from forum_memory.config import get_settings
 
@@ -37,9 +41,23 @@ def generate_namespace_name(display_name: str) -> str:
     return f"{slug}_{short_id}"
 
 
-def list_namespaces(session: Session) -> list[Namespace]:
-    """Return all active namespaces."""
+def list_namespaces(session: Session, user: User | None = None) -> list[Namespace]:
+    """Return active namespaces visible to the user.
+
+    PRIVATE boards are hidden from non-members. SUPER_ADMIN sees all.
+    """
     stmt = select(Namespace).where(Namespace.is_active.is_(True))
+    if user and user.role != SystemRole.SUPER_ADMIN:
+        member_ns = select(NamespaceModerator.namespace_id).where(
+            NamespaceModerator.user_id == user.id
+        )
+        stmt = stmt.where(
+            or_(
+                Namespace.access_mode != AccessMode.PRIVATE,
+                Namespace.owner_id == user.id,
+                Namespace.id.in_(member_ns),
+            )
+        )
     return list(session.exec(stmt).all())
 
 

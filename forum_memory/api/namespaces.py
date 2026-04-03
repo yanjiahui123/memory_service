@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
-from forum_memory.api.deps import get_db, get_current_user, check_board_permission
+from forum_memory.api.deps import get_db, get_current_user, check_board_permission, check_namespace_read_access
 from forum_memory.models.thread import Thread
 from forum_memory.models.enums import ThreadStatus
 from forum_memory.models.user import User
@@ -25,9 +25,12 @@ class ModeratorAdd(BaseModel):
 
 
 @router.get("", response_model=list[NamespaceRead])
-def list_namespaces(session: Session = Depends(get_db)):
-    """所有人可查看板块列表。"""
-    namespaces = namespace_service.list_namespaces(session)
+def list_namespaces(
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """查看板块列表（PRIVATE 板块仅成员可见）。"""
+    namespaces = namespace_service.list_namespaces(session, user)
     ns_ids = [ns.id for ns in namespaces]
     total_counts: dict = {}
     open_counts: dict = {}
@@ -60,11 +63,16 @@ def get_aggregate_stats(session: Session = Depends(get_db)):
 
 
 @router.get("/{ns_id}", response_model=NamespaceRead)
-def get_namespace(ns_id: UUID, session: Session = Depends(get_db)):
-    """所有人可查看板块详情。"""
+def get_namespace(
+    ns_id: UUID,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """查看板块详情（PRIVATE 板块仅成员可见）。"""
     ns = namespace_service.get_namespace(session, ns_id)
     if not ns:
         raise HTTPException(404, "Namespace not found")
+    check_namespace_read_access(ns_id, session, user)
     return ns
 
 
@@ -143,7 +151,10 @@ def list_moderators(
     stmt = (
         select(User)
         .join(NamespaceModerator, NamespaceModerator.user_id == User.id)
-        .where(NamespaceModerator.namespace_id == ns_id)
+        .where(
+            NamespaceModerator.namespace_id == ns_id,
+            NamespaceModerator.role == "moderator",
+        )
     )
     return list(session.exec(stmt).all())
 

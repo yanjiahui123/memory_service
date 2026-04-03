@@ -17,20 +17,20 @@ class Settings(BaseSettings):
     database_echo: bool = False
 
     # Elasticsearch
-    es_url: str = ""
+    es_url: str = "http://localhost:9200"
     es_index_prefix: str = "forum_memory"
     es_enabled: bool = True
     es_username: str = ""
     es_password: str = ""
-    es_verify_certs: bool = False
+    es_verify_certs: bool = True
     es_knn_num_candidates: int = 100
 
     # LLM
-    llm_provider: str = "custom"
+    llm_provider: str = "openai"
     llm_api_key: str = ""
-    llm_main_model: str = "Qwen2.5-72B-Instruct"
-    llm_embedding_model: str = "Qwen3-Reranker-4B"
-    embedding_dimension: int = 1024
+    llm_main_model: str = "gpt-4o"
+    llm_embedding_model: str = "text-embedding-3-small"
+    embedding_dimension: int = 1536
     llm_timeout: int = 60  # seconds, applies to all LLM/embedding/rerank calls
 
     # Custom provider (when llm_provider == "custom")
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     # RAG knowledge base
     rag_base_url: str = ""
-    rag_timeout: int = 300
+    rag_timeout: int = 30
 
     # JWT authentication
     jwt_secret_key: str = ""  # Required when jwt_enabled=True; set via FM_JWT_SECRET_KEY
@@ -60,13 +60,19 @@ class Settings(BaseSettings):
     jwt_enabled: bool = False  # Set True to require JWT; False keeps X-Employee-Id fallback
 
     # SSO Cookie authentication
-    sso_enabled: bool = True  # Set True to enable cookie-based SSO auth
+    sso_enabled: bool = False  # Set True to enable cookie-based SSO auth
     sso_verify_url: str = ""  # Cookie verification API endpoint
     sso_ak: str = ""  # Access key for signing JWT
     sso_sk: str = ""  # Secret key for signing JWT
     sso_tenant_id: str = ""
     sso_callback_url: str = ""  # URL parameter for cookie verification
     sso_user_scope: str = ""  # User scope parameter
+
+    # External user directory (iData)
+    idata_app_token: str = ""
+    idata_user_info_url: str = ""
+    idata_dept_employee_url: str = ""
+    idata_member_search_url: str = ""
 
     # File uploads
     upload_dir: str = "uploads"
@@ -78,10 +84,6 @@ class Settings(BaseSettings):
     promote_min_feedback: int = 10
     cold_inactive_days: int = 180
     archive_inactive_days: int = 365
-
-    # app info
-    app_key: str = ""
-    app_id: str = ""
 
     model_config = {"env_file": ".env", "env_prefix": "FM_"}
 

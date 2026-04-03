@@ -1,5 +1,7 @@
 """User model."""
 
+from sqlalchemy import Column
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 from forum_memory.models.base import UUIDMixin, TimestampMixin
 from forum_memory.models.enums import SystemRole
@@ -17,3 +19,8 @@ class User(UUIDMixin, TimestampMixin, table=True):
     avatar_url: str | None = Field(default=None, max_length=500)
     role: SystemRole = Field(default=SystemRole.USER, index=True)
     is_active: bool = Field(default=True)
+
+    # ── Department info (synced from external user directory) ──
+    dept_code: str | None = Field(default=None, max_length=50, index=True)
+    dept_path: str | None = Field(default=None, max_length=500)
+    dept_levels: dict | None = Field(default=None, sa_column=Column(JSONB))
