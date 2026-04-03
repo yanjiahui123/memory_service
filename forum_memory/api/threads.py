@@ -246,9 +246,22 @@ def ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = 
     thread_service.submit_ai_answer(thread_id)
 
 
+# In-memory lock: tracks threads currently generating AI answers
+_ai_generating: set[UUID] = set()
+_ai_lock = __import__("threading").Lock()
+
+
 @router.get("/{thread_id}/ai-answer/stream")
-def stream_ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def stream_ai_answer(
+    thread_id: UUID,
+    force: bool = False,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """SSE endpoint: stream AI answer tokens in real-time.
+
+    Args:
+        force: True = regenerate even if AI answer exists (manual regenerate).
 
     Emits:
       data: {"phase":"searching"}   — searching memories / RAG
@@ -256,22 +269,52 @@ def stream_ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: 
       data: {"token":"..."}         — incremental text chunk
       data: {"done":true}           — generation complete, comment saved
       data: {"error":"..."}         — generation failed
+      data: {"skipped":true}        — AI answer already exists or in progress
     """
     thread = thread_service.get_thread(session, thread_id)
     if not thread:
         raise HTTPException(404, "Thread not found")
     check_namespace_read_access(thread.namespace_id, session, user)
 
+    # Skip if AI answer already exists (unless force=true for regeneration)
+    if not force:
+        existing_ai = session.exec(
+            select(Comment).where(
+                Comment.thread_id == thread_id,
+                Comment.is_ai.is_(True),
+            )
+        ).first()
+        if existing_ai:
+            return StreamingResponse(
+                iter([_sse({"skipped": True, "reason": "ai_exists"})]),
+                media_type="text/event-stream; charset=utf-8",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+    # Acquire in-memory lock to prevent concurrent generation for same thread
+    with _ai_lock:
+        if thread_id in _ai_generating:
+            return StreamingResponse(
+                iter([_sse({"skipped": True, "reason": "in_progress"})]),
+                media_type="text/event-stream; charset=utf-8",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        _ai_generating.add(thread_id)
+
     def _generate():
         from forum_memory.database import engine
 
-        yield _sse({"phase": "searching"})
-        with Session(engine) as bg_session:
-            try:
-                yield from _stream_answer(bg_session, thread_id)
-            except Exception as exc:
-                logger.exception("Streaming AI answer failed for thread %s", thread_id)
-                yield _sse({"error": str(exc)})
+        try:
+            yield _sse({"phase": "searching"})
+            with Session(engine) as bg_session:
+                try:
+                    yield from _stream_answer(bg_session, thread_id)
+                except Exception as exc:
+                    logger.exception("Streaming AI answer failed for thread %s", thread_id)
+                    yield _sse({"error": str(exc)})
+        finally:
+            with _ai_lock:
+                _ai_generating.discard(thread_id)
 
     return StreamingResponse(
         _generate(),
