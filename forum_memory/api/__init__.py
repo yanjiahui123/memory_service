@@ -16,15 +16,14 @@ from forum_memory.api.members import router as member_router
 
 
 def register_routers(app: FastAPI) -> None:
-    prefix = "/api/v1"
-    app.include_router(auth_router, prefix=prefix)
-    app.include_router(user_router, prefix=prefix)
-    app.include_router(ns_router, prefix=prefix)
-    app.include_router(thread_router, prefix=prefix)
-    app.include_router(memory_router, prefix=prefix)
-    app.include_router(fb_router, prefix=prefix)
-    app.include_router(upload_router, prefix=prefix)
-    app.include_router(admin_router, prefix=prefix)
-    app.include_router(relation_router, prefix=prefix)
-    app.include_router(notif_router, prefix=prefix)
-    app.include_router(member_router, prefix=prefix)
+    app.include_router(auth_router)
+    app.include_router(user_router)
+    app.include_router(ns_router)
+    app.include_router(thread_router)
+    app.include_router(memory_router)
+    app.include_router(fb_router)
+    app.include_router(upload_router)
+    app.include_router(admin_router)
+    app.include_router(relation_router)
+    app.include_router(notif_router)
+    app.include_router(member_router)
