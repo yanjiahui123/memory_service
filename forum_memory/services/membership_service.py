@@ -297,12 +297,29 @@ def join_via_invite(session: Session, code: str, user: User) -> dict:
     invite.use_count += 1
     if invite.role == MemberRole.MODERATOR:
         _sync_role_after_promote(session, user)
+
+    # Auto-follow the board so it appears in the sidebar immediately
+    _auto_follow(session, invite.namespace_id, user.id)
+
     session.commit()
     return {
         "namespace_id": str(ns.id),
         "namespace_display_name": ns.display_name,
         "role": mem.role,
     }
+
+
+def _auto_follow(session: Session, namespace_id: UUID, user_id: UUID) -> None:
+    """Ensure the user follows the board (idempotent)."""
+    from forum_memory.models.board_follow import BoardFollow
+    existing = session.exec(
+        select(BoardFollow).where(
+            BoardFollow.user_id == user_id,
+            BoardFollow.namespace_id == namespace_id,
+        )
+    ).first()
+    if not existing:
+        session.add(BoardFollow(user_id=user_id, namespace_id=namespace_id))
 
 
 def _validate_invite(invite: NamespaceInvite) -> None:
