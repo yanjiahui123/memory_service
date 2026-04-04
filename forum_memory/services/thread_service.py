@@ -575,16 +575,29 @@ def generate_ai_answer(session: Session, thread_id: UUID) -> Comment | None:
 _AI_PLACEHOLDER = "<!-- ai_generating -->"
 
 
-def generate_ai_answer_stream(session: Session, thread_id: UUID):
+def generate_ai_answer_stream(
+    session: Session,
+    thread_id: UUID,
+    on_complete: "callable | None" = None,
+):
     """Generator: yield token chunks, then save final comment.
 
-    Creates a placeholder AI comment BEFORE starting LLM streaming so that
-    concurrent/refresh requests see an existing AI comment and skip.
-    If the client disconnects mid-stream, the finally block saves whatever
-    partial content was received. Caller must NOT use the session until
-    generator is exhausted.
+    LLM generation runs in a **background thread** so that client disconnect
+    (page refresh) does NOT interrupt the generation.  The background thread
+    always runs to completion and saves the full answer to the database.
+
+    Args:
+        on_complete: optional callback invoked after LLM finishes (any outcome),
+                     used by the API layer to release the in-memory lock.
+
+    Flow:
+      1. Prepare context + create placeholder AI comment (main thread)
+      2. Spawn background thread that calls LLM and pushes tokens to a Queue
+      3. Main generator reads from Queue and yields to SSE caller
+      4. If caller disconnects, background thread continues unaffected
     """
-    from forum_memory.providers import get_provider
+    import queue
+    import threading
 
     messages, cited_ids, stored_rag_context = _prepare_ai_context(session, thread_id)
 
@@ -592,51 +605,73 @@ def generate_ai_answer_stream(session: Session, thread_id: UUID):
     _upsert_ai_comment(session, thread_id, _AI_PLACEHOLDER, [], None)
     session.commit()
 
+    token_queue: queue.Queue = queue.Queue()
+    bg = threading.Thread(
+        target=_llm_worker,
+        args=(thread_id, messages, cited_ids, stored_rag_context, token_queue, on_complete),
+        daemon=True,
+    )
+    bg.start()
+
+    # Yield tokens to caller; if caller disconnects, bg thread still finishes
+    while True:
+        item = token_queue.get(timeout=300)  # 5 min safety timeout
+        if item is None:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def _llm_worker(
+    thread_id: UUID,
+    messages: list[dict],
+    cited_ids: list[UUID],
+    stored_rag_context: str | None,
+    token_queue,
+    on_complete: "callable | None",
+) -> None:
+    """Run LLM stream to completion in background thread, always save result."""
+    from forum_memory.providers import get_provider
+
     parts: list[str] = []
     try:
         for chunk in get_provider().complete_stream(messages):
             parts.append(chunk)
-            yield chunk
-    except GeneratorExit:
-        # Client disconnected — save partial content in a new session
-        _save_partial_answer(thread_id, parts, cited_ids, stored_rag_context)
+            token_queue.put(chunk)
+    except Exception as exc:
+        logger.exception("LLM stream failed for thread %s", thread_id)
+        token_queue.put(exc)
         return
-    except Exception:
-        _save_partial_answer(thread_id, parts, cited_ids, stored_rag_context)
-        raise
+    finally:
+        token_queue.put(None)  # Always signal completion
+        if on_complete:
+            on_complete()
 
     full_answer = "".join(parts)
     if not full_answer.strip():
-        logger.warning("LLM streamed empty answer for thread %s, skipping update", thread_id)
+        logger.warning("LLM empty answer for thread %s", thread_id)
         return
-    _upsert_ai_comment(session, thread_id, full_answer, cited_ids, stored_rag_context)
-    session.commit()
+
+    _persist_ai_answer(thread_id, full_answer, cited_ids, stored_rag_context)
 
 
-def _save_partial_answer(
+def _persist_ai_answer(
     thread_id: UUID,
-    parts: list[str],
+    content: str,
     cited_ids: list[UUID],
     stored_rag_context: str | None,
 ) -> None:
-    """Save whatever content was collected when the stream was interrupted.
-
-    Uses a fresh session because the original session may be in a broken state
-    after GeneratorExit.
-    """
+    """Save final AI answer using a fresh DB session (called from bg thread)."""
     from forum_memory.database import engine
 
-    partial = "".join(parts)
-    if not partial.strip():
-        logger.info("Stream interrupted with no content for thread %s, placeholder remains", thread_id)
-        return
     try:
         with Session(engine) as bg_session:
-            _upsert_ai_comment(bg_session, thread_id, partial, cited_ids, stored_rag_context)
+            _upsert_ai_comment(bg_session, thread_id, content, cited_ids, stored_rag_context)
             bg_session.commit()
-        logger.info("Saved partial AI answer (%d chars) for thread %s", len(partial), thread_id)
+        logger.info("AI answer saved (%d chars) for thread %s", len(content), thread_id)
     except Exception:
-        logger.exception("Failed to save partial AI answer for thread %s", thread_id)
+        logger.exception("Failed to save AI answer for thread %s", thread_id)
 
 
 def _upsert_ai_comment(
