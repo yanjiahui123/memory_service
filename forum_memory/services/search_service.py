@@ -107,7 +107,6 @@ def find_similar(
     except Exception:
         logger.exception("ES find_similar failed, falling back to text overlap")
 
-    # Fallback: SQL + text_overlap
     stmt = (
         select(Memory)
         .where(Memory.namespace_id == namespace_id, Memory.status == MemoryStatus.ACTIVE)

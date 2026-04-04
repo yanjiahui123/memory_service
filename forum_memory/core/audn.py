@@ -70,8 +70,8 @@ def _data_to_result(data: dict) -> AUDNResult:
     try:
         action = AUDNAction(action_str)
     except ValueError:
-        logger.error("Invalid AUDN action string: %s, fallback to ADD", action_str)
-        action = AUDNAction.ADD
+        logger.error("Invalid AUDN action string: %s", action_str)
+        action = AUDNAction.NONE
     return AUDNResult(
         action=action,
         target_id=data.get("target_id"),
