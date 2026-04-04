@@ -27,6 +27,7 @@ def _build_sort_clause(sort: str | None):
         return Thread.view_count.desc()
     if sort == "unanswered":
         return Thread.comment_count.asc()
+    # default: newest
     return Thread.created_at.desc()
 
 
@@ -574,53 +575,128 @@ def generate_ai_answer(session: Session, thread_id: UUID) -> Comment | None:
 
 _AI_PLACEHOLDER = "<!-- ai_generating -->"
 
+# ---------------------------------------------------------------------------
+# TokenBuffer — shared in-memory buffer for SSE "resume" on page refresh
+# ---------------------------------------------------------------------------
+import threading as _threading
+import queue as _queue
 
-def generate_ai_answer_stream(
+_SENTINEL_DONE = "__DONE__"
+_SENTINEL_ERROR = "__ERROR__"
+_BUFFER_TTL = 60  # seconds to keep buffer after completion
+
+
+class _TokenBuffer:
+    """Thread-safe token buffer for a single thread's AI generation.
+
+    - Writer (LLM bg thread): appends tokens via `put()`, marks done via `finish()`.
+    - Reader (SSE generator): iterates from any offset via `iter_from(offset)`.
+    """
+
+    def __init__(self):
+        self.tokens: list[str] = []
+        self.done = False
+        self.error: str | None = None
+        self.lock = _threading.Lock()
+        self.event = _threading.Event()  # signaled on each new token / done
+
+    def put(self, token: str) -> None:
+        with self.lock:
+            self.tokens.append(token)
+        self.event.set()
+
+    def finish(self, error: str | None = None) -> None:
+        with self.lock:
+            self.done = True
+            self.error = error
+        self.event.set()
+
+    def iter_from(self, offset: int = 0):
+        """Yield tokens starting from *offset*, blocking until done."""
+        idx = offset
+        while True:
+            self.event.wait(timeout=300)
+            with self.lock:
+                snapshot = self.tokens[idx:]
+                is_done = self.done
+                err = self.error
+            for tok in snapshot:
+                yield tok
+            idx += len(snapshot)
+            if is_done:
+                if err:
+                    raise RuntimeError(err)
+                return
+            self.event.clear()
+
+
+class _BufferManager:
+    """Global registry of active TokenBuffers, keyed by thread_id."""
+
+    def __init__(self):
+        self._buffers: dict[UUID, _TokenBuffer] = {}
+        self._lock = _threading.Lock()
+
+    def create(self, thread_id: UUID) -> _TokenBuffer:
+        buf = _TokenBuffer()
+        with self._lock:
+            self._buffers[thread_id] = buf
+        return buf
+
+    def get(self, thread_id: UUID) -> _TokenBuffer | None:
+        with self._lock:
+            return self._buffers.get(thread_id)
+
+    def remove(self, thread_id: UUID) -> None:
+        with self._lock:
+            self._buffers.pop(thread_id, None)
+
+    def schedule_remove(self, thread_id: UUID) -> None:
+        """Remove buffer after TTL so late-arriving connections still work."""
+        def _delayed():
+            import time
+            time.sleep(_BUFFER_TTL)
+            self.remove(thread_id)
+        t = _threading.Thread(target=_delayed, daemon=True)
+        t.start()
+
+
+_buffers = _BufferManager()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def get_active_buffer(thread_id: UUID) -> _TokenBuffer | None:
+    """Return the active token buffer if LLM is generating for this thread."""
+    return _buffers.get(thread_id)
+
+
+def start_ai_generation(
     session: Session,
     thread_id: UUID,
     on_complete: "callable | None" = None,
-):
-    """Generator: yield token chunks, then save final comment.
+) -> _TokenBuffer:
+    """Kick off LLM generation in background thread, return token buffer.
 
-    LLM generation runs in a **background thread** so that client disconnect
-    (page refresh) does NOT interrupt the generation.  The background thread
-    always runs to completion and saves the full answer to the database.
-
-    Args:
-        on_complete: optional callback invoked after LLM finishes (any outcome),
-                     used by the API layer to release the in-memory lock.
-
-    Flow:
-      1. Prepare context + create placeholder AI comment (main thread)
-      2. Spawn background thread that calls LLM and pushes tokens to a Queue
-      3. Main generator reads from Queue and yields to SSE caller
-      4. If caller disconnects, background thread continues unaffected
+    1. Prepare context (search memories + RAG)
+    2. Create placeholder AI comment
+    3. Spawn bg thread that streams LLM into a shared TokenBuffer
     """
-    import queue
-    import threading
-
     messages, cited_ids, stored_rag_context = _prepare_ai_context(session, thread_id)
 
-    # Create placeholder AI comment before LLM call to prevent duplicates
     _upsert_ai_comment(session, thread_id, _AI_PLACEHOLDER, [], None)
     session.commit()
 
-    token_queue: queue.Queue = queue.Queue()
-    bg = threading.Thread(
+    buf = _buffers.create(thread_id)
+    bg = _threading.Thread(
         target=_llm_worker,
-        args=(thread_id, messages, cited_ids, stored_rag_context, token_queue, on_complete),
+        args=(thread_id, messages, cited_ids, stored_rag_context, buf, on_complete),
         daemon=True,
     )
     bg.start()
-
-    # Yield tokens to caller; if caller disconnects, bg thread still finishes
-    while True:
-        item = token_queue.get(timeout=300)  # 5 min safety timeout
-        if item is None:
-            break
-        if isinstance(item, Exception):
-            raise item
-        yield item
+    return buf
 
 
 def _llm_worker(
@@ -628,7 +704,7 @@ def _llm_worker(
     messages: list[dict],
     cited_ids: list[UUID],
     stored_rag_context: str | None,
-    token_queue,
+    buf: _TokenBuffer,
     on_complete: "callable | None",
 ) -> None:
     """Run LLM stream to completion in background thread, always save result."""
@@ -638,21 +714,21 @@ def _llm_worker(
     try:
         for chunk in get_provider().complete_stream(messages):
             parts.append(chunk)
-            token_queue.put(chunk)
+            buf.put(chunk)
+        buf.finish()
     except Exception as exc:
         logger.exception("LLM stream failed for thread %s", thread_id)
-        token_queue.put(exc)
+        buf.finish(error=str(exc))
         return
     finally:
-        token_queue.put(None)  # Always signal completion
         if on_complete:
             on_complete()
+        _buffers.schedule_remove(thread_id)
 
     full_answer = "".join(parts)
     if not full_answer.strip():
         logger.warning("LLM empty answer for thread %s", thread_id)
         return
-
     _persist_ai_answer(thread_id, full_answer, cited_ids, stored_rag_context)
 
 

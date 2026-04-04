@@ -248,28 +248,9 @@ def ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = 
 
 # In-memory lock: tracks threads currently generating AI answers.
 # Lock is held from request start until the LLM background thread finishes,
-# NOT until the SSE connection closes. This way client disconnect doesn't
-# release the lock prematurely.
+# NOT until the SSE connection closes.
 _ai_generating: set[UUID] = set()
 _ai_lock = __import__("threading").Lock()
-
-
-def _check_skip(session, thread_id: UUID, force: bool):
-    """Return a skip reason string, or None if generation should proceed."""
-    if not force:
-        existing_ai = session.exec(
-            select(Comment).where(
-                Comment.thread_id == thread_id,
-                Comment.is_ai.is_(True),
-                Comment.deleted_at.is_(None),
-            )
-        ).first()
-        if existing_ai and existing_ai.content != thread_service._AI_PLACEHOLDER:
-            return "ai_exists"
-    with _ai_lock:
-        if thread_id in _ai_generating:
-            return "in_progress"
-    return None
 
 
 @router.get("/{thread_id}/ai-answer/stream")
@@ -281,8 +262,9 @@ def stream_ai_answer(
 ):
     """SSE endpoint: stream AI answer tokens in real-time.
 
-    LLM runs in a background thread that always completes even if
-    the client disconnects. The SSE generator just reads from a queue.
+    Supports "resume": if LLM is already generating for this thread
+    (e.g. user refreshed the page), the new connection picks up from
+    the shared TokenBuffer and continues streaming from where it left off.
 
     Args:
         force: True = regenerate even if AI answer exists (manual regenerate).
@@ -293,22 +275,31 @@ def stream_ai_answer(
       data: {"token":"..."}         — incremental text chunk
       data: {"done":true}           — generation complete, comment saved
       data: {"error":"..."}         — generation failed
-      data: {"skipped":true}        — AI answer already exists or in progress
+      data: {"skipped":true}        — AI answer already exists (non-placeholder)
     """
     thread = thread_service.get_thread(session, thread_id)
     if not thread:
         raise HTTPException(404, "Thread not found")
     check_namespace_read_access(thread.namespace_id, session, user)
 
-    skip_reason = _check_skip(session, thread_id, force)
-    if skip_reason:
-        return StreamingResponse(
-            iter([_sse({"skipped": True, "reason": skip_reason})]),
-            media_type="text/event-stream; charset=utf-8",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+    # 1) If a real (non-placeholder) AI answer exists, skip
+    if not force:
+        existing_ai = session.exec(
+            select(Comment).where(
+                Comment.thread_id == thread_id,
+                Comment.is_ai.is_(True),
+                Comment.deleted_at.is_(None),
+            )
+        ).first()
+        if existing_ai and existing_ai.content != thread_service._AI_PLACEHOLDER:
+            return _sse_response(iter([_sse({"skipped": True, "reason": "ai_exists"})]))
 
-    # Mark as generating — released by _llm_worker callback, NOT by SSE close
+    # 2) If LLM is already generating, resume from shared buffer
+    active_buf = thread_service.get_active_buffer(thread_id)
+    if active_buf and not force:
+        return _sse_response(_resume_stream(active_buf))
+
+    # 3) Start new generation
     with _ai_lock:
         _ai_generating.add(thread_id)
 
@@ -316,23 +307,38 @@ def stream_ai_answer(
         with _ai_lock:
             _ai_generating.discard(thread_id)
 
-    def _generate():
-        """SSE generator: reads tokens from queue, yields to client."""
+    def _new_stream():
         yield _sse({"phase": "searching"})
         try:
-            gen = thread_service.generate_ai_answer_stream(
+            buf = thread_service.start_ai_generation(
                 session, thread_id, on_complete=_on_llm_complete,
             )
             yield _sse({"phase": "generating"})
-            for chunk in gen:
+            for chunk in buf.iter_from(0):
                 yield _sse({"token": chunk})
             yield _sse({"done": True})
         except Exception as exc:
             logger.exception("Streaming AI answer failed for thread %s", thread_id)
             yield _sse({"error": str(exc)})
 
+    return _sse_response(_new_stream())
+
+
+def _resume_stream(buf):
+    """Resume from an in-progress TokenBuffer — replay all existing + live tokens."""
+    yield _sse({"phase": "generating"})
+    try:
+        for chunk in buf.iter_from(0):
+            yield _sse({"token": chunk})
+        yield _sse({"done": True})
+    except Exception as exc:
+        logger.exception("Resume stream failed: %s", exc)
+        yield _sse({"error": str(exc)})
+
+
+def _sse_response(generator):
     return StreamingResponse(
-        _generate(),
+        generator,
         media_type="text/event-stream; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
