@@ -573,25 +573,71 @@ def generate_ai_answer(session: Session, thread_id: UUID) -> Comment | None:
     return comment
 
 
+_AI_PLACEHOLDER = "<!-- ai_generating -->"
+
+
 def generate_ai_answer_stream(session: Session, thread_id: UUID):
     """Generator: yield token chunks, then save final comment.
 
-    Yields str chunks. Caller must NOT use the session until generator is exhausted.
+    Creates a placeholder AI comment BEFORE starting LLM streaming so that
+    concurrent/refresh requests see an existing AI comment and skip.
+    If the client disconnects mid-stream, the finally block saves whatever
+    partial content was received. Caller must NOT use the session until
+    generator is exhausted.
     """
     from forum_memory.providers import get_provider
 
     messages, cited_ids, stored_rag_context = _prepare_ai_context(session, thread_id)
+
+    # Create placeholder AI comment before LLM call to prevent duplicates
+    _upsert_ai_comment(session, thread_id, _AI_PLACEHOLDER, [], None)
+    session.commit()
+
     parts: list[str] = []
-    for chunk in get_provider().complete_stream(messages):
-        parts.append(chunk)
-        yield chunk
+    try:
+        for chunk in get_provider().complete_stream(messages):
+            parts.append(chunk)
+            yield chunk
+    except GeneratorExit:
+        # Client disconnected — save partial content in a new session
+        _save_partial_answer(thread_id, parts, cited_ids, stored_rag_context)
+        return
+    except Exception:
+        _save_partial_answer(thread_id, parts, cited_ids, stored_rag_context)
+        raise
 
     full_answer = "".join(parts)
     if not full_answer.strip():
-        logger.warning("LLM streamed empty answer for thread %s, skipping upsert", thread_id)
+        logger.warning("LLM streamed empty answer for thread %s, skipping update", thread_id)
         return
     _upsert_ai_comment(session, thread_id, full_answer, cited_ids, stored_rag_context)
     session.commit()
+
+
+def _save_partial_answer(
+    thread_id: UUID,
+    parts: list[str],
+    cited_ids: list[UUID],
+    stored_rag_context: str | None,
+) -> None:
+    """Save whatever content was collected when the stream was interrupted.
+
+    Uses a fresh session because the original session may be in a broken state
+    after GeneratorExit.
+    """
+    from forum_memory.database import engine
+
+    partial = "".join(parts)
+    if not partial.strip():
+        logger.info("Stream interrupted with no content for thread %s, placeholder remains", thread_id)
+        return
+    try:
+        with Session(engine) as bg_session:
+            _upsert_ai_comment(bg_session, thread_id, partial, cited_ids, stored_rag_context)
+            bg_session.commit()
+        logger.info("Saved partial AI answer (%d chars) for thread %s", len(partial), thread_id)
+    except Exception:
+        logger.exception("Failed to save partial AI answer for thread %s", thread_id)
 
 
 def _upsert_ai_comment(

@@ -276,15 +276,16 @@ def stream_ai_answer(
         raise HTTPException(404, "Thread not found")
     check_namespace_read_access(thread.namespace_id, session, user)
 
-    # Skip if AI answer already exists (unless force=true for regeneration)
+    # Skip if a real (non-placeholder) AI answer already exists
     if not force:
         existing_ai = session.exec(
             select(Comment).where(
                 Comment.thread_id == thread_id,
                 Comment.is_ai.is_(True),
+                Comment.deleted_at.is_(None),
             )
         ).first()
-        if existing_ai:
+        if existing_ai and existing_ai.content != thread_service._AI_PLACEHOLDER:
             return StreamingResponse(
                 iter([_sse({"skipped": True, "reason": "ai_exists"})]),
                 media_type="text/event-stream; charset=utf-8",
