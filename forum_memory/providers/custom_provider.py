@@ -81,7 +81,7 @@ class CustomProvider(LLMProvider):
             headers=self.headers,
             json={
                 "model": self.rerank_model,
-                "sentence_pairs": texts,
+                "texts": texts,
                 "dimensions": self.embed_dimension,
                 "enable_instruct": True,
             },
