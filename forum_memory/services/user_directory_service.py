@@ -5,7 +5,7 @@ Encapsulates three external APIs:
 2. get_dept_employee_list_page — list department members (paginated)
 3. search_member_information — fuzzy search users by name/account
 """
-import base64
+
 import logging
 
 import requests
@@ -20,18 +20,7 @@ _PAGE_SIZE = 100
 def _get_app_token() -> str:
     """Get dynamic authorization token for external API calls."""
     settings = get_settings()
-
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    body = {"appId": settings.app_id, "credential": base64.b64encode(settings.idata_app_token.encode("utf-8")).decode("utf-8")}
-    try:
-        resp = requests.post(settings.idata_app_token_url, headers=headers, json=body, verify=False)
-
-        if not resp.ok:
-            logger.warning("search_users failed: %s", resp.reason)
-
-        return resp.json()["result"]
-    except Exception:
-        logger.exception("Get app dynamic token failed")
+    return settings.idata_app_token
 
 
 def _build_dept_path(user_info: dict) -> str:
@@ -81,7 +70,7 @@ def lookup_user(account: str) -> dict | None:
         return None
     return {
         "w3account": w3,
-        "name": (data.get("last_Name") or "").strip(),
+        "name": (data.get("name") or "").strip(),
         "email": (data.get("person_Mail") or "").strip(),
         "dept_code": (data.get("dept_Code") or "").strip(),
         "dept_path": _build_dept_path(data),
@@ -145,19 +134,19 @@ def search_users(keyword: str, page_size: int = 20) -> list[dict]:
     params = {
         "lang": "zh",
         "searchValue": keyword,
-        "searchType": "0",
+        "searchType": "1",
         "pageSize": str(page_size),
         "page": "1",
     }
     try:
         resp = requests.get(
             settings.idata_member_search_url,
-            headers=headers, params=params, verify=False
+            headers=headers, params=params, verify=False, timeout=10,
         )
         if not resp.ok:
             logger.warning("search_users failed: %s", resp.reason)
             return []
-        return resp.json().get("members", []) if isinstance(resp.json(), dict) else []
+        return resp.json().get("data", []) if isinstance(resp.json(), dict) else []
     except Exception:
         logger.exception("search_users error")
         return []

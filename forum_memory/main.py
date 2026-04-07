@@ -121,7 +121,7 @@ def _add_health_check(target_app: FastAPI) -> None:
     def health():
         return {"status": "ok"}
 
-    @target_app.get("/health/db")
+    @target_app.get("/api/v1/health/db")
     def health_db():
         """检查数据库连接"""
         from forum_memory.database import engine as db_engine
@@ -139,4 +139,4 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
