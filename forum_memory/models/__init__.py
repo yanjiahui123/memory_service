@@ -14,11 +14,9 @@ from forum_memory.models.memory_relation import MemoryRelation
 from forum_memory.models.notification import Notification
 from forum_memory.models.namespace_invite import NamespaceInvite
 from forum_memory.models.board_follow import BoardFollow
-from forum_memory.models.board_share_link import BoardShareLink, BoardShareLinkNamespace
 
 __all__ = [
     "User", "Namespace", "NamespaceModerator", "NamespaceInvite", "BoardFollow",
-    "BoardShareLink", "BoardShareLinkNamespace",
     "Thread", "Comment",
     "Memory", "ExtractionRecord", "Feedback",
     "OperationLog", "DomainEvent", "CommentVote", "MemoryRelation",

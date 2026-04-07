@@ -1,10 +1,3 @@
-"""FastAPI dependencies — sync session, user lookup, and access control.
-
-Authentication strategy (in priority order):
-1. JWT: Authorization: Bearer <token> (when jwt_enabled=True)
-2. SSO Cookie: hwsso_login + hwssot3 + login_sid + login_uid (default)
-"""
-
 import logging
 from uuid import UUID
 
@@ -71,7 +64,7 @@ def _resolve_user_from_cookie(request: Request, session: Session) -> User | None
 
     uid = user_info.get("uid", "").lower().strip()
     display_name = user_info.get("displayNameCn", "").strip()
-    email = user_info.get("email", "").strip()
+    email = user_info.get("email", "")[0] if user_info.get("email", "") else "None"
 
     if not uid:
         logger.warning("SSO cookie verified but uid is empty")

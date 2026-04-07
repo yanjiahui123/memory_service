@@ -18,7 +18,7 @@ class Memory(UUIDMixin, TimestampMixin, table=True):
         Index("ix_memory_namespace_status", "namespace_id", "status"),
         # ES repair sensor: WHERE status=ACTIVE AND indexed_at IS NULL
         Index("ix_memory_indexed_at", "indexed_at"),
-        # Quality alerts: WHERE pending_human_confirm = TRUE
+
         Index("ix_memory_pending_confirm", "pending_human_confirm"),
     )
 
