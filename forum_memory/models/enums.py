@@ -69,14 +69,13 @@ class SystemRole(str, Enum):
 class AccessMode(str, Enum):
     """Namespace access mode."""
     PUBLIC = "public"          # Anyone can read and post
-    RESTRICTED = "restricted"  # Anyone can read, only members can post
     PRIVATE = "private"        # Only members can read and post
 
 
 class MemberRole(str, Enum):
     """Role within a namespace membership."""
     MODERATOR = "moderator"    # Can manage board settings + members
-    MEMBER = "member"          # Can read/write in private/restricted boards
+    MEMBER = "member"          # Can read/write in private boards
 
 
 # ── Feedback enums ────────────────────────────────────────────

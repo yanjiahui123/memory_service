@@ -222,11 +222,11 @@ def check_namespace_write_access(
     session: Session,
     user: User,
 ) -> None:
-    """Check write access. RESTRICTED and PRIVATE boards require membership."""
+    """Check write access. PRIVATE boards require membership."""
     from forum_memory.models.namespace import Namespace
     ns = session.get(Namespace, ns_id)
     if not ns:
         raise HTTPException(404, "Namespace not found")
-    if ns.access_mode in (AccessMode.RESTRICTED, AccessMode.PRIVATE):
+    if ns.access_mode == AccessMode.PRIVATE:
         if not _is_namespace_member(ns_id, session, user):
             raise HTTPException(403, "该板块仅成员可发帖")
