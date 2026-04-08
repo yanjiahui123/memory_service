@@ -10,7 +10,7 @@ from forum_memory.models.user import User
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.namespace_moderator import NamespaceModerator
 from forum_memory.models.board_follow import BoardFollow
-from forum_memory.models.enums import SystemRole
+from forum_memory.models.enums import SystemRole, MemberRole
 from forum_memory.schemas.user import UserCreate, UserUpdate, UserRead
 from forum_memory.schemas.namespace import NamespaceRead
 from forum_memory.services import user_directory_service
@@ -37,6 +37,7 @@ def get_my_managed_namespaces(
         select(Namespace)
         .join(NamespaceModerator, NamespaceModerator.namespace_id == Namespace.id)
         .where(NamespaceModerator.user_id == user.id)
+        .where(NamespaceModerator.role == MemberRole.MODERATOR)
         .where(Namespace.is_active.is_(True))
     )
     return list(session.exec(stmt).all())

@@ -160,7 +160,8 @@ def get_managed_namespace_ids(session: Session, user: User) -> list[UUID]:
     if user.role == SystemRole.SUPER_ADMIN:
         return []
     stmt = select(NamespaceModerator.namespace_id).where(
-        NamespaceModerator.user_id == user.id
+        NamespaceModerator.user_id == user.id,
+        NamespaceModerator.role == MemberRole.MODERATOR,
     )
     return list(session.exec(stmt).all())
 
