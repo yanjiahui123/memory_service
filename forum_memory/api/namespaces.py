@@ -206,14 +206,14 @@ def add_moderator(
     if target_user.role == SystemRole.SUPER_ADMIN:
         raise HTTPException(400, "超级管理员无需指派为板块管理员")
 
-    # Check duplicate
+    # Check duplicate: only block if already a moderator
     existing = session.exec(
         select(NamespaceModerator).where(
             NamespaceModerator.user_id == target_user.id,
             NamespaceModerator.namespace_id == ns_id,
         )
     ).first()
-    if existing:
+    if existing and existing.role == "moderator":
         raise HTTPException(409, "该用户已是此板块管理员")
 
     # Update user role to board_admin if currently a regular user
@@ -221,8 +221,13 @@ def add_moderator(
         target_user.role = SystemRole.BOARD_ADMIN
         session.add(target_user)
 
-    mod = NamespaceModerator(user_id=target_user.id, namespace_id=ns_id)
-    session.add(mod)
+    if existing:
+        # Upgrade existing member record to moderator (unique constraint prevents new row)
+        existing.role = "moderator"
+        session.add(existing)
+    else:
+        mod = NamespaceModerator(user_id=target_user.id, namespace_id=ns_id)
+        session.add(mod)
     session.commit()
     session.refresh(target_user)
     return target_user
@@ -240,6 +245,7 @@ def remove_moderator(
     stmt = select(NamespaceModerator).where(
         NamespaceModerator.user_id == user_id,
         NamespaceModerator.namespace_id == ns_id,
+        NamespaceModerator.role == "moderator",
     )
     mod = session.exec(stmt).first()
     if not mod:
@@ -249,7 +255,10 @@ def remove_moderator(
 
     # If user has no more moderator assignments, revert role to USER
     remaining = session.exec(
-        select(NamespaceModerator).where(NamespaceModerator.user_id == user_id)
+        select(NamespaceModerator).where(
+            NamespaceModerator.user_id == user_id,
+            NamespaceModerator.role == "moderator",
+        )
     ).first()
     if not remaining:
         target_user = session.get(User, user_id)
