@@ -8,7 +8,7 @@ from sqlmodel import Session
 from forum_memory.api.deps import get_db, get_current_user, check_board_permission
 from forum_memory.models.user import User
 from forum_memory.schemas.membership import (
-    MemberAdd, MemberBatchAdd, MemberBatchByDept,
+    MemberAdd, MemberBatchAdd, MemberBatchByDept, MemberBatchDelete,
     MemberRead, MemberRoleUpdate,
     InviteCreate, InviteRead,
 )
@@ -101,6 +101,18 @@ def update_member_role(
         return {"user_id": str(user_id), "role": mem.role}
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
+
+
+@router.post("/namespaces/{ns_id}/members/batch-delete")
+def batch_remove_members(
+    ns_id: UUID,
+    data: MemberBatchDelete,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量移除成员。"""
+    check_board_permission(ns_id, session, user)
+    return membership_service.batch_remove_members(session, ns_id, data.user_ids)
 
 
 @router.delete("/namespaces/{ns_id}/members/{user_id}", status_code=204)

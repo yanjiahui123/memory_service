@@ -33,6 +33,10 @@ class MemberRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MemberBatchDelete(BaseModel):
+    user_ids: list[UUID]
+
+
 class MemberRoleUpdate(BaseModel):
     role: str
 

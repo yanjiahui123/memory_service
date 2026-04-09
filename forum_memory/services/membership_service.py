@@ -124,10 +124,12 @@ def batch_add_members(
     ns_id: UUID,
     employee_ids: list[str],
     role: str = "member",
+    max_count: int | None = 100,
 ) -> dict:
-    """Batch add members by employee_id list."""
+    """Batch add members by employee_id list. max_count=None means no limit."""
+    ids = employee_ids if max_count is None else employee_ids[:max_count]
     added, skipped, errors = 0, 0, []
-    for eid in employee_ids[:100]:
+    for eid in ids:
         eid = eid.strip()
         if not eid:
             continue
@@ -156,7 +158,7 @@ def batch_add_by_department(
     from forum_memory.services.user_directory_service import list_dept_members
     dept_members = list_dept_members(dept_code)
     employee_ids = [m["w3account"] for m in dept_members if m.get("w3account")]
-    result = batch_add_members(session, ns_id, employee_ids, role)
+    result = batch_add_members(session, ns_id, employee_ids, role, max_count=None)
     result["total_in_dept"] = len(dept_members)
     return result
 
@@ -202,6 +204,34 @@ def remove_member(session: Session, ns_id: UUID, user_id: UUID) -> None:
     if was_moderator:
         user = session.get(User, user_id)
         _sync_role_after_demote(session, user)
+
+
+def batch_remove_members(
+    session: Session,
+    ns_id: UUID,
+    user_ids: list[UUID],
+) -> dict:
+    """Batch remove members from a namespace. One commit for all deletes."""
+    removed, errors, ex_moderator_ids = 0, [], []
+    for uid in user_ids:
+        stmt = select(NamespaceModerator).where(
+            NamespaceModerator.user_id == uid,
+            NamespaceModerator.namespace_id == ns_id,
+        )
+        mem = session.exec(stmt).first()
+        if not mem:
+            errors.append(f"{uid}: 不是此板块成员")
+            continue
+        if mem.role == MemberRole.MODERATOR:
+            ex_moderator_ids.append(uid)
+        session.delete(mem)
+        removed += 1
+    session.commit()
+    for uid in ex_moderator_ids:
+        user = session.get(User, uid)
+        if user:
+            _sync_role_after_demote(session, user)
+    return {"removed": removed, "errors": errors}
 
 
 # ── Role sync helpers ────────────────────────────────────────
