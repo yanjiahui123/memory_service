@@ -538,13 +538,15 @@ def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], 
     namespace = session.get(Namespace, thread.namespace_id)
     ns_config = (namespace.config or {}) if namespace else {}
 
-    author_uid = _get_employee_id(session, thread.author_id)
+    # 使用板块 owner 的 employee_id 调用 RAG，确保有知识库访问权限
+    owner_id = namespace.owner_id if namespace else None
+    rag_uid = _get_employee_id(session, owner_id)
 
     memories_text, cited_ids = _search_related_memories(
         session, question, thread.namespace_id, ns_config.get("enable_memory_search", True),
     )
     rag_context_prompt, stored_rag_context = _query_rag_context(
-        ns_config, question, ns_config.get("enable_rag_search", True), uid=author_uid,
+        ns_config, question, ns_config.get("enable_rag_search", True), uid=rag_uid,
     )
 
     messages = [
