@@ -168,6 +168,40 @@ def delete_memory_doc(memory_id: UUID, index_name: str | None = None) -> bool:
 
 # ── Search ───────────────────────────────────────────────
 
+def _build_hybrid_query(query_text: str, filter_clauses: list[dict]) -> dict:
+    """Build function_score query combining BM25 + quality_score boost."""
+    bm25_clause = {
+        "match": {
+            "content": {
+                "query": query_text,
+                "minimum_should_match": "30%",
+            },
+        },
+    }
+    return {
+        "function_score": {
+            "query": {
+                "bool": {
+                    "should": [bm25_clause],
+                    "filter": filter_clauses,
+                },
+            },
+            "functions": [
+                {
+                    "field_value_factor": {
+                        "field": "quality_score",
+                        "modifier": "none",
+                        "missing": 0.5,
+                    },
+                    "weight": 5,
+                },
+            ],
+            "boost_mode": "sum",
+            "score_mode": "sum",
+        },
+    }
+
+
 def hybrid_search(
     namespace_id: UUID,
     query_text: str,
@@ -177,10 +211,6 @@ def hybrid_search(
     index_name: str | None = None,
 ) -> list[dict]:
     """BM25 + KNN hybrid search (union mode).
-
-    BM25 as ``should`` (scoring boost, not hard filter) so KNN-only matches
-    are preserved.  ``quality_score`` is mixed in via function_score to
-    surface high-quality memories earlier.
 
     Returns [{"memory_id": str, "score": float}, ...]
     """
@@ -195,42 +225,11 @@ def hybrid_search(
         {"term": {"status": status_filter}},
     ]
 
-    # BM25 as should: contributes score but does not exclude KNN-only hits
-    bm25_clause: dict = {
-        "match": {
-            "content": {
-                "query": query_text,
-                "minimum_should_match": "30%",
-            },
-        },
-    }
-
     try:
         resp = es.search(
             index=name,
             size=limit,
-            query={
-                "function_score": {
-                    "query": {
-                        "bool": {
-                            "should": [bm25_clause],
-                            "filter": filter_clauses,
-                        },
-                    },
-                    "functions": [
-                        {
-                            "field_value_factor": {
-                                "field": "quality_score",
-                                "modifier": "none",
-                                "missing": 0.5,
-                            },
-                            "weight": 5,
-                        },
-                    ],
-                    "boost_mode": "sum",
-                    "score_mode": "sum",
-                },
-            },
+            query=_build_hybrid_query(query_text, filter_clauses),
             knn={
                 "field": "embedding",
                 "query_vector": query_embedding,

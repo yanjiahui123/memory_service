@@ -1,5 +1,6 @@
 """Thread API routes — sync."""
 
+import importlib
 import json
 import logging
 from uuid import UUID
@@ -250,7 +251,7 @@ def ai_answer(thread_id: UUID, session: Session = Depends(get_db), user: User = 
 # Lock is held from request start until the LLM background thread finishes,
 # NOT until the SSE connection closes.
 _ai_generating: set[UUID] = set()
-_ai_lock = __import__("threading").Lock()
+_ai_lock = importlib.import_module("threading").Lock()
 
 
 @router.get("/{thread_id}/ai-answer/stream")

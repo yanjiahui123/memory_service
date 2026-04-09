@@ -27,11 +27,13 @@ def _get_app_token() -> str:
         resp = requests.post(settings.idata_app_token_url, headers=headers, json=body, verify=False)
 
         if not resp.ok:
-            logger.warning("search_users failed: %s", resp.reason)
+            logger.warning("_get_app_token failed: %s", resp.reason)
+            return ""
 
         return resp.json()["result"]
     except Exception:
         logger.exception("Get app dynamic token failed")
+        return ""
 
 
 def _build_dept_path(user_info: dict) -> str:

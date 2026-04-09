@@ -113,7 +113,6 @@ def create_namespace(
 
     # 板块管理员创建板块时，自动将其加入 namespace_moderators
     if add_as_moderator:
-        from forum_memory.models.namespace_moderator import NamespaceModerator
         mod = NamespaceModerator(user_id=owner_id, namespace_id=ns.id)
         session.add(mod)
         session.commit()
