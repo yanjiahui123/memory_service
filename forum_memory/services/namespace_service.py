@@ -115,7 +115,11 @@ def create_namespace(
     if add_as_moderator:
         mod = NamespaceModerator(user_id=owner_id, namespace_id=ns.id)
         session.add(mod)
-        session.commit()
+
+    # Owner 自动关注板块
+    from forum_memory.models.board_follow import BoardFollow
+    session.add(BoardFollow(user_id=owner_id, namespace_id=ns.id))
+    session.commit()
 
     # Create the ES index for this namespace
     try:

@@ -103,16 +103,18 @@ def _lookup_external(employee_id: str) -> dict | None:
 def _upsert_membership(
     session: Session, ns_id: UUID, user_id: UUID, role: str,
 ) -> NamespaceModerator:
-    """Create membership or return existing one."""
+    """Create membership or return existing one. Auto-follows the board."""
     stmt = select(NamespaceModerator).where(
         NamespaceModerator.user_id == user_id,
         NamespaceModerator.namespace_id == ns_id,
     )
     existing = session.exec(stmt).first()
     if existing:
+        _auto_follow(session, ns_id, user_id)
         return existing
     mem = NamespaceModerator(user_id=user_id, namespace_id=ns_id, role=role)
     session.add(mem)
+    _auto_follow(session, ns_id, user_id)
     session.flush()
     return mem
 
