@@ -717,21 +717,20 @@ def _llm_worker(
         for chunk in get_provider().complete_stream(messages):
             parts.append(chunk)
             buf.put(chunk)
+        # 先持久化到数据库，再通知 SSE done，避免前端 refetch 拿到旧内容
+        full_answer = "".join(parts)
+        if full_answer.strip():
+            _persist_ai_answer(thread_id, full_answer, cited_ids, stored_rag_context)
+        else:
+            logger.warning("LLM empty answer for thread %s", thread_id)
         buf.finish()
     except Exception as exc:
         logger.exception("LLM stream failed for thread %s", thread_id)
         buf.finish(error=str(exc))
-        return
     finally:
         if on_complete:
             on_complete()
         _buffers.schedule_remove(thread_id)
-
-    full_answer = "".join(parts)
-    if not full_answer.strip():
-        logger.warning("LLM empty answer for thread %s", thread_id)
-        return
-    _persist_ai_answer(thread_id, full_answer, cited_ids, stored_rag_context)
 
 
 def _persist_ai_answer(
