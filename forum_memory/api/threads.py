@@ -261,14 +261,27 @@ def stream_ai_answer(
     session: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """SSE endpoint: stream AI answer tokens in real-time.
+    """SSE endpoint: stream AI answer tokens in real-time."""
+    return _do_stream_ai(thread_id, force, session, user)
 
-    Supports "resume": if LLM is already generating for this thread
-    (e.g. user refreshed the page), the new connection picks up from
-    the shared TokenBuffer and continues streaming from where it left off.
 
-    Args:
-        force: True = regenerate even if AI answer exists (manual regenerate).
+@router.get("/{thread_id}/ai-answer/regenerate/stream")
+def regenerate_ai_answer_stream(
+    thread_id: UUID,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """SSE endpoint: force regenerate AI answer (dedicated path, avoids query param issues)."""
+    return _do_stream_ai(thread_id, True, session, user)
+
+
+def _do_stream_ai(
+    thread_id: UUID,
+    force: bool,
+    session: Session,
+    user: User,
+):
+    """Shared SSE logic for stream / regenerate.
 
     Emits:
       data: {"phase":"searching"}   — searching memories / RAG
