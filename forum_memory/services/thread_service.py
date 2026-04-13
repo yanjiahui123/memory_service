@@ -15,6 +15,7 @@ from forum_memory.core.state_machine import can_transition
 from forum_memory.schemas.thread import ThreadCreate, CommentCreate
 from forum_memory.schemas.memory import MemorySearchRequest
 from forum_memory.core.prompts import AI_ANSWER_SYSTEM_V2, AI_ANSWER_USER_V2
+from forum_memory.core.image_preprocessor import enrich_with_image_descriptions, has_images
 
 logger = logging.getLogger(__name__)
 
@@ -528,13 +529,22 @@ def _query_rag_context(
     return "(no knowledge base configured)", None
 
 
+def _enrich_question_images(question: str) -> str:
+    """Replace markdown images in the question with vision-LLM descriptions."""
+    if not has_images(question):
+        return question
+    from forum_memory.providers import get_provider
+    return enrich_with_image_descriptions(question, get_provider())
+
+
 def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], list[UUID], str | None]:
     """Pre-process: search memories + RAG. Returns (messages, cited_ids, rag_context)."""
     thread = session.get(Thread, thread_id)
     if not thread:
         raise ValueError("Thread not found")
 
-    question = f"{thread.title}\n{thread.content}"
+    raw_question = f"{thread.title}\n{thread.content}"
+    question = _enrich_question_images(raw_question)
     namespace = session.get(Namespace, thread.namespace_id)
     ns_config = (namespace.config or {}) if namespace else {}
 
