@@ -91,13 +91,16 @@ def get_memory(session: Session, memory_id: UUID) -> Memory | None:
 
 
 def create_memory(session: Session, data: MemoryCreate) -> Memory:
-    create_data = data.model_dump(exclude={"authority", "pending_human_confirm"})
+    create_data = data.model_dump(exclude={"authority", "pending_human_confirm", "gate_confidence"})
     memory = Memory(**create_data)
     # Apply optional authority/pending from schema
     if data.authority:
         memory.authority = Authority(data.authority)
     if data.pending_human_confirm:
         memory.pending_human_confirm = data.pending_human_confirm
+    # Store gate confidence for future quality recalculations
+    if data.gate_confidence is not None:
+        memory.gate_confidence = data.gate_confidence
     # Compute initial quality score before commit
     memory.quality_score = compute_quality_score(
         useful=0, not_useful=0, wrong=0, outdated=0,
@@ -106,6 +109,7 @@ def create_memory(session: Session, data: MemoryCreate) -> Memory:
         created_at=datetime.now(tz=timezone(timedelta(hours=8))),
         cite_count=0,
         resolved_citation_count=0,
+        gate_confidence=memory.gate_confidence,
     )
     session.add(memory)
     _add_log(session, memory, OperationType.ADD, reason="created")
@@ -269,6 +273,7 @@ def refresh_quality(session: Session, memory_id: UUID) -> float:
         created_at=memory.created_at,
         cite_count=memory.cite_count,
         resolved_citation_count=memory.resolved_citation_count,
+        gate_confidence=memory.gate_confidence,
     )
     memory.quality_score = score
     memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
@@ -464,6 +469,7 @@ def _recalc_scores(memories: list[Memory], wrong_threshold: int) -> list[Memory]
             created_at=m.created_at,
             cite_count=m.cite_count,
             resolved_citation_count=m.resolved_citation_count,
+            gate_confidence=m.gate_confidence,
         )
         if m.wrong_count >= wrong_threshold and not m.pending_human_confirm:
             m.pending_human_confirm = True

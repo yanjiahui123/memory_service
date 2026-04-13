@@ -6,14 +6,14 @@ from forum_memory.core.quality import compute_quality_score
 
 
 def test_zero_feedback_returns_neutral_score():
-    """No feedback at all should give a neutral-ish score around 0.575."""
+    """No feedback at all should give a neutral-ish score around 0.55."""
     now = datetime.now(tz=timezone(timedelta(hours=8)))
     score = compute_quality_score(
         useful=0, not_useful=0, wrong=0, outdated=0,
         source_role=None, retrieve_count=0, created_at=now,
     )
-    # 0.30*0.5 + 0.20*0.5 + 0.15*0.5 + 0.10*0.0 + 0.15*1.0 + 0.10*1.0 = 0.575
-    assert 0.55 <= score <= 0.60
+    # 0.25*0.5 + 0.15*0.5 + 0.15*0.5 + 0.15*0.5 + 0.10*1.0 + 0.10*0.0 + 0.10*1.0 = 0.55
+    assert 0.50 <= score <= 0.60
 
 
 def test_high_useful_ratio_boosts_score():
@@ -123,3 +123,45 @@ def test_retrieve_heat_factor():
         source_role=None, retrieve_count=0, created_at=now,
     )
     assert high_retrieval > zero_retrieval
+
+
+def test_gate_confidence_differentiates_same_source_memories():
+    """Memories from same source with different gate_confidence should get different scores.
+
+    This is the primary reason for adding gate_confidence: at creation time,
+    all other factors (feedback, retrieval, citation) are identical.
+    """
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
+    high_conf = compute_quality_score(
+        useful=0, not_useful=0, wrong=0, outdated=0,
+        source_role="replier", retrieve_count=0, created_at=now,
+        gate_confidence=0.95,
+    )
+    mid_conf = compute_quality_score(
+        useful=0, not_useful=0, wrong=0, outdated=0,
+        source_role="replier", retrieve_count=0, created_at=now,
+        gate_confidence=0.6,
+    )
+    low_conf = compute_quality_score(
+        useful=0, not_useful=0, wrong=0, outdated=0,
+        source_role="replier", retrieve_count=0, created_at=now,
+        gate_confidence=0.5,
+    )
+    assert high_conf > mid_conf > low_conf
+    # Difference should be meaningful (not just rounding)
+    assert high_conf - low_conf >= 0.05
+
+
+def test_gate_confidence_default_backward_compatible():
+    """Default gate_confidence=0.5 should produce same result as omitting it."""
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
+    with_default = compute_quality_score(
+        useful=5, not_useful=0, wrong=0, outdated=0,
+        source_role=None, retrieve_count=10, created_at=now,
+        gate_confidence=0.5,
+    )
+    without_param = compute_quality_score(
+        useful=5, not_useful=0, wrong=0, outdated=0,
+        source_role=None, retrieve_count=10, created_at=now,
+    )
+    assert with_default == without_param

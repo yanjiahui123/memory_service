@@ -10,6 +10,10 @@ os.environ.setdefault("FM_LLM_PROVIDER", "custom")
 os.environ.setdefault("FM_CUSTOM_LLM_URL", "http://localhost:1")
 os.environ.setdefault("FM_CUSTOM_EMBED_URL", "http://localhost:1")
 os.environ.setdefault("FM_CUSTOM_RERANK_URL", "http://localhost:1")
+os.environ.setdefault("FM_SSO_ENABLED", "false")
+os.environ.setdefault("FM_SSO_VERIFY_URL", "http://localhost:1")
+os.environ.setdefault("FM_SSO_AK", "test-ak")
+os.environ.setdefault("FM_SSO_SK", "test-sk")
 
 from uuid import uuid4  # noqa: E402
 

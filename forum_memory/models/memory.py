@@ -33,6 +33,7 @@ class Memory(UUIDMixin, TimestampMixin, table=True):
 
     # Quality
     quality_score: float = Field(default=0.5)
+    gate_confidence: float = Field(default=0.5)  # Gate stage quality confidence (0..1)
 
     # Classification
     knowledge_type: str | None = Field(default=None, max_length=50)

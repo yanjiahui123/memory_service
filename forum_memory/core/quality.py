@@ -79,16 +79,23 @@ def compute_quality_score(
     created_at: datetime,
     cite_count: int = 0,
     resolved_citation_count: int = 0,
+    gate_confidence: float = 0.5,
 ) -> float:
-    """Compute overall quality score (0..1) from six factors.
+    """Compute overall quality score (0..1) from seven factors.
 
     Weights:
-      useful_ratio          0.30  — explicit user approval
-      citation_resolution   0.20  — did citing this memory lead to resolution?
+      useful_ratio          0.25  — explicit user approval
+      citation_resolution   0.15  — did citing this memory lead to resolution?
+      gate_confidence       0.15  — extraction gate quality assessment (initial differentiator)
       source_weight         0.15  — role of the answer author
+      freshness             0.10  — age decay (1yr → 0.1)
       retrieve_heat         0.10  — popularity / retrieval frequency
-      freshness             0.15  — age decay (1yr → 0.1)
       penalty               0.10  — wrong / outdated deduction
+
+    gate_confidence is the key differentiator at creation time: when feedback
+    counters are all zero and most factors return neutral values, gate_confidence
+    (set by the Gate stage) ensures memories from the same source get distinct
+    initial scores based on their assessed quality.
     """
     ur = _useful_ratio(useful, not_useful, wrong)
     sw = _source_weight(source_role)
@@ -96,6 +103,15 @@ def compute_quality_score(
     fr = _freshness(created_at)
     pn = _penalty(wrong, outdated)
     cr = _citation_resolution_rate(cite_count, resolved_citation_count)
+    gc = max(0.0, min(1.0, gate_confidence))
 
-    raw = 0.30 * ur + 0.20 * cr + 0.15 * sw + 0.10 * rh + 0.15 * fr + 0.10 * (1 - pn)
+    raw = (
+        0.25 * ur
+        + 0.15 * cr
+        + 0.15 * gc
+        + 0.15 * sw
+        + 0.10 * fr
+        + 0.10 * rh
+        + 0.10 * (1 - pn)
+    )
     return round(max(0.0, min(1.0, raw)), 4)

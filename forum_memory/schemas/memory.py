@@ -17,6 +17,7 @@ class MemoryCreate(BaseModel):
     resolved_type: str | None = None
     authority: str | None = None
     pending_human_confirm: bool = False
+    gate_confidence: float | None = None
 
 
 class MemoryUpdate(BaseModel):
@@ -33,6 +34,7 @@ class MemoryRead(BaseModel):
     authority: str
     status: str
     quality_score: float
+    gate_confidence: float = 0.5
     knowledge_type: str | None
     tags: list | None
     environment: str | None

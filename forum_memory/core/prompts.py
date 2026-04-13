@@ -108,9 +108,14 @@ Evaluate each knowledge point on three criteria:
 2. General: Is it applicable beyond the specific questioner's unique environment?
 3. Specific: Does it contain actionable information (not vague platitudes)?
 
-Return the same JSON array with two additional fields per item:
+Return the same JSON array with three additional fields per item:
 - "pass_gate": true if the knowledge point passes ALL three criteria, false otherwise
-- "gate_reason": 用简体中文简要说明通过或未通过的原因
+- "gate_confidence": a float between 0.0 and 1.0 indicating overall quality confidence:
+  - 0.9-1.0: Excellent — highly actionable, well-verified, broadly applicable
+  - 0.7-0.89: Good — solid knowledge with minor gaps (e.g. missing verification steps)
+  - 0.5-0.69: Acceptable — passes gate but limited scope or lacks depth
+  - Below 0.5: Should not pass gate (set pass_gate to false)
+- "gate_reason": 用简体中文简要说明通过或未通过的原因，以及给出该置信度的理由
 
 A knowledge point FAILS if it:
 - Is too vague (e.g., "适当配置相关设置")
@@ -121,7 +126,7 @@ A knowledge point FAILS if it:
 GATE_USER = """Knowledge points to evaluate:
 {knowledge_points}
 
-Return the same array with pass_gate and gate_reason fields added:"""
+Return the same array with pass_gate, gate_confidence, and gate_reason fields added:"""
 
 
 # ---------------------------------------------------------------------------

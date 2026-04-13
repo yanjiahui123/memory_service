@@ -111,7 +111,8 @@ def build_gate_messages(knowledge_points: list[dict]) -> list[dict]:
 def parse_gated_facts(raw: str) -> list[dict]:
     """Parse gate output; convert passing atoms to standard fact format.
 
-    Standard fact format: {"content": str, "tags": list, "knowledge_type": str}
+    Standard fact format:
+        {"content": str, "tags": list, "knowledge_type": str, "gate_confidence": float}
     """
     text = raw.strip()
     if text.startswith("```"):
@@ -136,12 +137,30 @@ def parse_gated_facts(raw: str) -> list[dict]:
             )
             continue
         content = _compose_content(item)
+        confidence = _parse_gate_confidence(item)
         results.append({
             "content": content,
             "tags": item.get("tags") or [],
             "knowledge_type": item.get("knowledge_type") or "faq",
+            "gate_confidence": confidence,
         })
     return results
+
+
+def _parse_gate_confidence(item: dict) -> float:
+    """Extract and clamp gate_confidence from a gated item.
+
+    Returns 0.5 (neutral) if the field is missing or invalid, ensuring
+    backward compatibility with older Gate prompts.
+    """
+    raw = item.get("gate_confidence")
+    if raw is None:
+        return 0.5
+    try:
+        val = float(raw)
+        return max(0.0, min(1.0, val))
+    except (TypeError, ValueError):
+        return 0.5
 
 
 def _compose_content(atom: dict) -> str:

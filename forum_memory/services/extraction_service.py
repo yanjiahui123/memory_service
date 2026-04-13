@@ -388,4 +388,5 @@ def _build_memory_create(ctx: SourceContext, fact: dict) -> MemoryCreate:
         resolved_type=ctx.resolved_type,
         authority=ctx.authority.value,
         pending_human_confirm=ctx.pending_human_confirm,
+        gate_confidence=fact.get("gate_confidence"),
     )
