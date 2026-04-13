@@ -238,11 +238,15 @@ def _execute_pipeline(session: Session, ctx: SourceContext, record: ExtractionRe
 
 
 def _enrich_images(llm, question: str, discussion: str) -> tuple[str, str]:
-    """Replace markdown images with vision-LLM descriptions in question and discussion."""
+    """Replace markdown images with vision-LLM descriptions in question and discussion.
+
+    Only the enriched text is used here (search_terms are not needed during
+    extraction — the pipeline already has the full discussion context).
+    """
     if has_images(question):
-        question = enrich_with_image_descriptions(question, llm)
+        question = enrich_with_image_descriptions(question, llm).enriched_text
     if has_images(discussion):
-        discussion = enrich_with_image_descriptions(discussion, llm)
+        discussion = enrich_with_image_descriptions(discussion, llm).enriched_text
     return question, discussion
 
 

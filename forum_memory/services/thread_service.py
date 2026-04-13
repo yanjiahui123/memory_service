@@ -15,7 +15,9 @@ from forum_memory.core.state_machine import can_transition
 from forum_memory.schemas.thread import ThreadCreate, CommentCreate
 from forum_memory.schemas.memory import MemorySearchRequest
 from forum_memory.core.prompts import AI_ANSWER_SYSTEM_V2, AI_ANSWER_USER_V2
-from forum_memory.core.image_preprocessor import enrich_with_image_descriptions, has_images
+from forum_memory.core.image_preprocessor import (
+    enrich_with_image_descriptions, has_images, strip_image_markdown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -529,22 +531,39 @@ def _query_rag_context(
     return "(no knowledge base configured)", None
 
 
-def _enrich_question_images(question: str) -> str:
-    """Replace markdown images in the question with vision-LLM descriptions."""
-    if not has_images(question):
-        return question
+def _build_search_and_llm_questions(title: str, content: str) -> tuple[str, str]:
+    """Build two versions of the question from thread title + content.
+
+    Returns (search_query, llm_question):
+      - search_query:  title + clean text + image keywords (concise, for recall)
+      - llm_question:  title + enriched content with full image descriptions
+    """
+    if not has_images(content):
+        combined = f"{title}\n{content}"
+        return combined, combined
+
     from forum_memory.providers import get_provider
-    return enrich_with_image_descriptions(question, get_provider())
+    result = enrich_with_image_descriptions(content, get_provider())
+    llm_question = f"{title}\n{result.enriched_text}"
+    clean_text = strip_image_markdown(content)
+    search_parts = [title, clean_text]
+    if result.search_terms:
+        search_parts.append(result.search_terms)
+    search_query = "\n".join(search_parts)
+    return search_query, llm_question
 
 
 def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], list[UUID], str | None]:
-    """Pre-process: search memories + RAG. Returns (messages, cited_ids, rag_context)."""
+    """Pre-process: image enrich + search memories + RAG.
+
+    Returns (messages, cited_ids, rag_context).
+    Uses concise search_query for recall, rich llm_question for LLM prompt.
+    """
     thread = session.get(Thread, thread_id)
     if not thread:
         raise ValueError("Thread not found")
 
-    raw_question = f"{thread.title}\n{thread.content}"
-    question = _enrich_question_images(raw_question)
+    search_query, llm_question = _build_search_and_llm_questions(thread.title, thread.content)
     namespace = session.get(Namespace, thread.namespace_id)
     ns_config = (namespace.config or {}) if namespace else {}
 
@@ -553,16 +572,16 @@ def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], 
     rag_uid = _get_employee_id(session, owner_id)
 
     memories_text, cited_ids = _search_related_memories(
-        session, question, thread.namespace_id, ns_config.get("enable_memory_search", True),
+        session, search_query, thread.namespace_id, ns_config.get("enable_memory_search", True),
     )
     rag_context_prompt, stored_rag_context = _query_rag_context(
-        ns_config, question, ns_config.get("enable_rag_search", True), uid=rag_uid,
+        ns_config, search_query, ns_config.get("enable_rag_search", True), uid=rag_uid,
     )
 
     messages = [
         {"role": "system", "content": AI_ANSWER_SYSTEM_V2.format(memories=memories_text)},
         {"role": "user", "content": AI_ANSWER_USER_V2.format(
-            question=question, rag_context=rag_context_prompt,
+            question=llm_question, rag_context=rag_context_prompt,
         )},
     ]
     return messages, cited_ids, stored_rag_context

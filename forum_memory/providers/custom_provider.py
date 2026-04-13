@@ -79,28 +79,16 @@ class CustomProvider(LLMProvider):
         return resp.json()
 
     def describe_image(self, image_url: str) -> str:
-        """Describe image content via vision model (Qwen2.5-VL compatible)."""
+        """Describe image content via vision model (Qwen2.5-VL compatible).
+
+        Returns raw VL model output. The expected format (enforced by prompt):
+            描述: <detailed description>
+            关键词: <keyword1>, <keyword2>, ...
+        Parsing is handled by the caller (image_preprocessor).
+        """
         if not self.vision_enabled or not self.vision_model:
             raise NotImplementedError("Vision model not configured")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "请详细描述这张图片的内容。如果包含文字、代码、错误信息、"
-                            "表格或配置，请完整提取。如果是架构图或流程图，"
-                            "请描述各个组件及其关系。"
-                        ),
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_url},
-                    },
-                ],
-            }
-        ]
+        messages = _build_vision_messages(image_url)
         resp = requests.post(
             self.vision_url,
             headers=self.headers,
@@ -128,6 +116,29 @@ class CustomProvider(LLMProvider):
         )
         resp.raise_for_status()
         return resp.json()
+
+
+_VISION_PROMPT = (
+    "请详细描述这张图片的内容。如果包含文字、代码、错误信息、"
+    "表格或配置，请完整提取。如果是架构图或流程图，"
+    "请描述各个组件及其关系。\n\n"
+    "请严格按以下格式输出（两行）：\n"
+    "描述: <完整描述>\n"
+    "关键词: <3-5个用于搜索的关键词，逗号分隔>"
+)
+
+
+def _build_vision_messages(image_url: str) -> list[dict]:
+    """Build OpenAI-compatible multimodal messages for the vision model."""
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": _VISION_PROMPT},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }
+    ]
 
 
 def _iter_sse_tokens(resp: requests.Response) -> Iterator[str]:
