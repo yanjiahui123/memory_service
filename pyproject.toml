@@ -18,6 +18,8 @@ dependencies = [
     "apscheduler>=3.10,<4.0",
     "slowapi>=0.1.9",
     "pyjwt>=2.8",
+    "esdk-obs-python>=3.24",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]

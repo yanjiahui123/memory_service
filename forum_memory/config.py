@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     upload_dir: str = "uploads"
     upload_max_size_mb: int = 5
 
+    # OBS (Object Storage)
+    obs_enabled: bool = False
+    obs_ak: str = ""
+    obs_sk: str = ""
+    obs_endpoint: str = ""
+    obs_bucket: str = ""
+    obs_upload_prefix: str = "forum_memory/uploads"
+
+    # Vision model (for image description in extraction)
+    vision_enabled: bool = False
+    custom_vision_url: str = ""
+    custom_vision_model: str = ""
+
     # Quality thresholds
     wrong_feedback_threshold: int = 3
     promote_useful_ratio: float = 0.8

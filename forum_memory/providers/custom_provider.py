@@ -28,6 +28,10 @@ class CustomProvider(LLMProvider):
         self.rerank_model = settings.custom_rerank_model
         self.embed_dimension = settings.embedding_dimension
         self.timeout = settings.llm_timeout
+        # Vision model (optional)
+        self.vision_url = settings.custom_vision_url or self.llm_url
+        self.vision_model = settings.custom_vision_model
+        self.vision_enabled = settings.vision_enabled
 
     def complete(self, messages: list[dict]) -> str:
         resp = requests.post(
@@ -73,6 +77,40 @@ class CustomProvider(LLMProvider):
         )
         resp.raise_for_status()
         return resp.json()
+
+    def describe_image(self, image_url: str) -> str:
+        """Describe image content via vision model (Qwen2.5-VL compatible)."""
+        if not self.vision_enabled or not self.vision_model:
+            raise NotImplementedError("Vision model not configured")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "请详细描述这张图片的内容。如果包含文字、代码、错误信息、"
+                            "表格或配置，请完整提取。如果是架构图或流程图，"
+                            "请描述各个组件及其关系。"
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url},
+                    },
+                ],
+            }
+        ]
+        resp = requests.post(
+            self.vision_url,
+            headers=self.headers,
+            json={"model": self.vision_model, "messages": messages},
+            verify=False,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        resp.encoding = "utf-8"
+        return resp.json()["choices"][0]["message"]["content"]
 
     def rerank(self, query: str, documents: list[str]) -> list[float]:
         texts = [[query, doc] for doc in documents]

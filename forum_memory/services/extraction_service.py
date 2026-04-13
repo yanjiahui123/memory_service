@@ -23,6 +23,7 @@ from forum_memory.core.extraction import (
     build_gate_messages, parse_gated_facts,
 )
 from forum_memory.core.audn import AUDNResult, build_audn_messages, parse_audn_response
+from forum_memory.core.image_preprocessor import enrich_with_image_descriptions, has_images
 
 from forum_memory.schemas.memory import MemoryCreate
 from forum_memory.services.memory_service import apply_audn
@@ -206,10 +207,11 @@ def _create_record(
 
 
 def _execute_pipeline(session: Session, ctx: SourceContext, record: ExtractionRecord) -> list[UUID]:
-    """Compress → extract → AUDN → persist."""
+    """Image enrich → Compress → extract → AUDN → persist."""
     llm = get_provider()
-    compressed = maybe_compress(llm, ctx.title, ctx.question, ctx.discussion)
-    facts = extract_facts(llm, ctx.title, ctx.question, compressed)
+    question, discussion = _enrich_images(llm, ctx.question, ctx.discussion)
+    compressed = maybe_compress(llm, ctx.title, question, discussion)
+    facts = extract_facts(llm, ctx.title, question, compressed)
 
     memory_ids: list[UUID] = []
     batch_created: list[dict] = []
@@ -233,6 +235,15 @@ def _execute_pipeline(session: Session, ctx: SourceContext, record: ExtractionRe
         ctx.source_type, ctx.source_id, len(facts), len(memory_ids), action_counts,
     )
     return memory_ids
+
+
+def _enrich_images(llm, question: str, discussion: str) -> tuple[str, str]:
+    """Replace markdown images with vision-LLM descriptions in question and discussion."""
+    if has_images(question):
+        question = enrich_with_image_descriptions(question, llm)
+    if has_images(discussion):
+        discussion = enrich_with_image_descriptions(discussion, llm)
+    return question, discussion
 
 
 def maybe_compress(llm, title: str, question: str, discussion: str) -> str:
