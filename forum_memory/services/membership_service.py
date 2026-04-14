@@ -143,35 +143,47 @@ def batch_add_members(
     role: str = "member",
     max_count: int | None = 100,
 ) -> dict:
-    """Batch add members by employee_id list. max_count=None means no limit.
-
-    Strategy:
-    1. One SELECT to find existing users.
-    2. External lookup (one-by-one, unavoidable) for missing users only.
-    3. One bulk INSERT ... ON CONFLICT DO UPDATE for users.
-    4. One bulk INSERT ... ON CONFLICT DO NOTHING for memberships.
-    5. One bulk INSERT ... ON CONFLICT DO NOTHING for board follows.
-    6. One final commit.
-    """
+    """Batch add members. One SELECT + bulk INSERT per table, one commit."""
     ids = [eid.strip() for eid in employee_ids if eid.strip()]
     if max_count is not None:
         ids = ids[:max_count]
     if not ids:
         return {"added": 0, "skipped": 0, "errors": []}
 
-    errors: list[str] = []
-
-    # ── 1. Bulk-fetch existing users ─────────────────────────
-    existing_map: dict[str, User] = {
-        u.employee_id: u
-        for u in session.exec(select(User).where(User.employee_id.in_(ids))).all()
-    }
-
-    # ── 2. External lookup for missing users ─────────────────
     now = datetime.now(tz=_TZ8)
-    new_rows: list[dict] = []
-    update_rows: list[dict] = []  # existing users whose info may be stale
+    existing_map = _bulk_fetch_users(session, ids)
+    new_rows, update_rows, errors = _resolve_users_from_directory(ids, existing_map, now)
+    all_users = _bulk_upsert_users(session, existing_map, new_rows, update_rows)
 
+    if not all_users:
+        session.commit()
+        return {"added": 0, "skipped": 0, "errors": errors}
+
+    added, skipped = _bulk_upsert_memberships(session, ns_id, all_users, role, now)
+
+    if role == MemberRole.MODERATOR:
+        for u in all_users.values():
+            _sync_role_after_promote(session, u)
+
+    session.commit()
+    return {"added": added, "skipped": skipped, "errors": errors}
+
+
+def _bulk_fetch_users(session: Session, ids: list[str]) -> dict[str, User]:
+    """Fetch all users matching the given employee_ids in one query."""
+    rows = session.exec(select(User).where(User.employee_id.in_(ids))).all()
+    return {u.employee_id: u for u in rows}
+
+
+def _resolve_users_from_directory(
+    ids: list[str],
+    existing_map: dict[str, User],
+    now: datetime,
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Call external directory for each id; split into new/update rows and errors."""
+    new_rows: list[dict] = []
+    update_rows: list[dict] = []
+    errors: list[str] = []
     for eid in ids:
         info = _lookup_external(eid)
         if not info:
@@ -191,8 +203,16 @@ def batch_add_members(
             update_rows.append(row)
         else:
             new_rows.append({**row, "id": uuid4(), "created_at": now, "updated_at": now})
+    return new_rows, update_rows, errors
 
-    # ── 3. Bulk upsert users ──────────────────────────────────
+
+def _bulk_upsert_users(
+    session: Session,
+    existing_map: dict[str, User],
+    new_rows: list[dict],
+    update_rows: list[dict],
+) -> dict[str, User]:
+    """Bulk-insert new users and update stale fields on existing ones, then re-fetch."""
     if new_rows:
         stmt = pg_insert(User).values(new_rows)
         stmt = stmt.on_conflict_do_update(
@@ -207,8 +227,6 @@ def batch_add_members(
             },
         )
         session.exec(stmt)
-
-    # Update stale info for already-existing users
     for row in update_rows:
         user = existing_map[row["employee_id"]]
         user.display_name = row["display_name"]
@@ -216,71 +234,49 @@ def batch_add_members(
         user.dept_code = row["dept_code"]
         user.dept_path = row["dept_path"]
         user.dept_levels = row["dept_levels"]
-
     session.flush()
+    valid_eids = [r["employee_id"] for r in new_rows + update_rows] + [
+        eid for eid in existing_map if eid not in {r["employee_id"] for r in update_rows}
+    ]
+    rows = session.exec(select(User).where(User.employee_id.in_(valid_eids))).all()
+    return {u.employee_id: u for u in rows}
 
-    # ── 4. Re-fetch all users to get their IDs ────────────────
-    valid_ids = [r["employee_id"] for r in new_rows] + [r["employee_id"] for r in update_rows]
-    valid_ids += [eid for eid in ids if eid in existing_map and eid not in {r["employee_id"] for r in update_rows}]
-    all_users: dict[str, User] = {
-        u.employee_id: u
-        for u in session.exec(select(User).where(User.employee_id.in_(valid_ids))).all()
-    }
 
-    if not all_users:
-        session.commit()
-        return {"added": 0, "skipped": 0, "errors": errors}
+def _bulk_upsert_memberships(
+    session: Session,
+    ns_id: UUID,
+    all_users: dict[str, User],
+    role: str,
+    now: datetime,
+) -> tuple[int, int]:
+    """Bulk-insert memberships and board follows; return (added, skipped)."""
+    from forum_memory.models.board_follow import BoardFollow
 
     user_id_list = [u.id for u in all_users.values()]
-
-    # ── 5. Bulk-fetch existing memberships ────────────────────
     existing_member_ids: set[UUID] = {
-        m.user_id
-        for m in session.exec(
+        m.user_id for m in session.exec(
             select(NamespaceModerator).where(
                 NamespaceModerator.namespace_id == ns_id,
                 NamespaceModerator.user_id.in_(user_id_list),
             )
         ).all()
     }
-
     new_mem_rows = [
-        {"id": uuid4(), "user_id": u.id, "namespace_id": ns_id, "role": role,
-         "created_at": now, "updated_at": now}
-        for u in all_users.values()
-        if u.id not in existing_member_ids
+        {"id": uuid4(), "user_id": u.id, "namespace_id": ns_id,
+         "role": role, "created_at": now, "updated_at": now}
+        for u in all_users.values() if u.id not in existing_member_ids
     ]
-    added = len(new_mem_rows)
-    skipped = len(all_users) - added
-
     if new_mem_rows:
         mem_stmt = pg_insert(NamespaceModerator).values(new_mem_rows)
-        mem_stmt = mem_stmt.on_conflict_do_nothing(
-            index_elements=["user_id", "namespace_id"],
-        )
-        session.exec(mem_stmt)
-
-    # ── 6. Bulk upsert board follows ──────────────────────────
-    from forum_memory.models.board_follow import BoardFollow
-
+        session.exec(mem_stmt.on_conflict_do_nothing(index_elements=["user_id", "namespace_id"]))
     follow_rows = [
         {"id": uuid4(), "user_id": u.id, "namespace_id": ns_id,
          "created_at": now, "updated_at": now}
         for u in all_users.values()
     ]
     follow_stmt = pg_insert(BoardFollow).values(follow_rows)
-    follow_stmt = follow_stmt.on_conflict_do_nothing(
-        index_elements=["user_id", "namespace_id"],
-    )
-    session.exec(follow_stmt)
-
-    # ── 7. Role sync for new moderators ──────────────────────
-    if role == MemberRole.MODERATOR:
-        for u in all_users.values():
-            _sync_role_after_promote(session, u)
-
-    session.commit()
-    return {"added": added, "skipped": skipped, "errors": errors}
+    session.exec(follow_stmt.on_conflict_do_nothing(index_elements=["user_id", "namespace_id"]))
+    return len(new_mem_rows), len(all_users) - len(new_mem_rows)
 
 
 def batch_add_by_department(
