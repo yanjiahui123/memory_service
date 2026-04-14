@@ -253,14 +253,13 @@ def _bulk_upsert_memberships(
     from forum_memory.models.board_follow import BoardFollow
 
     user_id_list = [u.id for u in all_users.values()]
-    existing_member_ids: set[UUID] = {
-        m.user_id for m in session.exec(
-            select(NamespaceModerator).where(
-                NamespaceModerator.namespace_id == ns_id,
-                NamespaceModerator.user_id.in_(user_id_list),
-            )
-        ).all()
-    }
+    existing_members = session.exec(
+        select(NamespaceModerator).where(
+            NamespaceModerator.namespace_id == ns_id,
+            NamespaceModerator.user_id.in_(user_id_list),
+        )
+    ).all()
+    existing_member_ids: set[UUID] = {m.user_id for m in existing_members}
     new_mem_rows = [
         {"id": uuid4(), "user_id": u.id, "namespace_id": ns_id,
          "role": role, "created_at": now, "updated_at": now}
