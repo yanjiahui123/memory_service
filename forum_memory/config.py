@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     app_name: str = "Forum Memory Agent"
     debug: bool = False
 
+    # Logging
+    log_dir: str = "logs"
+    log_level: str = "INFO"
+    log_console: bool = True
+
     # Database — sync driver (psycopg2)
     # 必须通过环境变量 FM_DATABASE_URL 或 .env 文件设置
     database_url: str = ""

@@ -1,27 +1,29 @@
 """Forum Memory Agent — FastAPI application (synchronous)."""
 
 import logging
-import logging.config
 from contextlib import asynccontextmanager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
+# Logging MUST be set up before any other forum_memory import that
+# calls getLogger(), so all loggers inherit the correct handlers.
+from forum_memory.config import get_settings as _boot_settings
 
-from pathlib import Path
+_s = _boot_settings()
+from forum_memory.logging_config import setup_logging  # noqa: E402
+setup_logging(log_dir=_s.log_dir, log_level=_s.log_level, console=_s.log_console)
+del _s
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
+from pathlib import Path  # noqa: E402
 
-from forum_memory.api.rate_limit import limiter
-from forum_memory.config import get_settings
-from forum_memory.database import init_db
-from forum_memory.api import register_routers
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from slowapi import _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+
+from forum_memory.api.rate_limit import limiter  # noqa: E402
+from forum_memory.config import get_settings  # noqa: E402
+from forum_memory.database import init_db  # noqa: E402
+from forum_memory.api import register_routers  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +95,16 @@ def create_app() -> FastAPI:
     fastapi_app.state.limiter = limiter
     fastapi_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     _add_cors(fastapi_app)
+    _add_access_log(fastapi_app)
     register_routers(fastapi_app)
     _mount_uploads(fastapi_app, settings)
     _add_health_check(fastapi_app)
     return fastapi_app
+
+
+def _add_access_log(target_app: FastAPI) -> None:
+    from forum_memory.middleware.access_log import AccessLogMiddleware
+    target_app.add_middleware(AccessLogMiddleware)
 
 
 def _add_cors(target_app: FastAPI) -> None:
