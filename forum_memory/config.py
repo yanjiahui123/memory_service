@@ -1,8 +1,13 @@
 """Application configuration using Pydantic Settings."""
 
+import os
+from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+# Default log directory: absolute path at filesystem root, e.g. /applog/logs on Linux
+_DEFAULT_LOG_DIR = str(Path(os.sep).absolute() / "applog" / "logs")
 
 
 class Settings(BaseSettings):
@@ -12,7 +17,7 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Logging
-    log_dir: str = "logs"
+    log_dir: str = _DEFAULT_LOG_DIR
     log_level: str = "INFO"
     log_console: bool = True
 
