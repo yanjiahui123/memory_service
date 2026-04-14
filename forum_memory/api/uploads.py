@@ -4,7 +4,7 @@ Supports two storage backends:
   - OBS (obs_enabled=True): images stored on Huawei OBS, served via backend proxy
   - Local disk (default): images saved to ``upload_dir``, served via StaticFiles
 
-Both backends return ``/api/uploads/{filename}`` as the URL so the frontend
+Both backends return ``/uploads/{filename}`` as the URL so the frontend
 and extraction pipeline always use the same path format.
 """
 
@@ -19,7 +19,7 @@ from forum_memory.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/uploads", tags=["uploads"])
+router = APIRouter(prefix="/uploads", tags=["uploads"])
 
 # SVG 已移除：可内嵌恶意 JS，StaticFiles 直接 serve 会导致 XSS
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -102,14 +102,14 @@ def upload_file(file: UploadFile):
 
 
 def _upload_to_obs(content: bytes, ext: str) -> dict:
-    """Upload image to OBS, return relative ``/api/uploads/`` URL."""
+    """Upload image to OBS, return relative ``/uploads/`` URL."""
     from forum_memory.services.obs_service import upload_image
     try:
         filename = upload_image(content, ext)
     except Exception as e:
         logger.error("OBS upload failed: %s", e)
         raise HTTPException(500, "Image upload to OBS failed") from e
-    return {"url": f"/api/uploads/{filename}", "filename": filename}
+    return {"url": f"/uploads/{filename}", "filename": filename}
 
 
 def _upload_to_local(content: bytes, ext: str, settings) -> dict:
@@ -122,4 +122,4 @@ def _upload_to_local(content: bytes, ext: str, settings) -> dict:
     except OSError as e:
         logger.error("Failed to save uploaded file: %s", e)
         raise HTTPException(500, "File save failed") from e
-    return {"url": f"/api/uploads/{filename}", "filename": filename}
+    return {"url": f"/uploads/{filename}", "filename": filename}

@@ -121,7 +121,7 @@ def _add_cors(target_app: FastAPI) -> None:
 def _mount_uploads(target_app: FastAPI, settings) -> None:
     upload_path = Path(settings.upload_dir)
     upload_path.mkdir(parents=True, exist_ok=True)
-    target_app.mount("/api/uploads", StaticFiles(directory=str(upload_path)), name="uploads")
+    target_app.mount("/uploads", StaticFiles(directory=str(upload_path)), name="uploads")
 
 
 def _add_health_check(target_app: FastAPI) -> None:
