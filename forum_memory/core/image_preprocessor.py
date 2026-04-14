@@ -164,10 +164,10 @@ def _to_data_uri(image_bytes: bytes) -> str:
       2. Save as JPEG (quality 85) — typically 100-300 KB
       3. Base64 encode → ``data:image/jpeg;base64,...``
     """
-    img = Image.open(io.BytesIO(image_bytes))
-    img = _resize_if_needed(img)
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        img = _resize_if_needed(img)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=_JPEG_QUALITY)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     logger.debug(
         "Image compressed: %d KB → %d KB",
