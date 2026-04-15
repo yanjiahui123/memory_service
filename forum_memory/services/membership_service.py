@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from forum_memory.models.user import User
@@ -89,22 +88,7 @@ def _find_or_create_user(session: Session, employee_id: str) -> User:
         dept_levels=info.get("dept_levels"),
     )
     session.add(user)
-    try:
-        with session.begin_nested():  # SAVEPOINT：回滚只影响本条，不污染外层事务
-            session.flush()
-    except IntegrityError:
-        # 并发写入或外部目录 email 重复：savepoint 已回退，用最新信息更新已有记录
-        existing = session.exec(
-            select(User).where(User.employee_id == employee_id)
-        ).first()
-        if not existing:
-            raise ValueError(f"用户 {employee_id} 数据冲突，请稍后重试")
-        existing.display_name = info.get("name", employee_id)
-        existing.email = info.get("email")
-        existing.dept_code = info.get("dept_code")
-        existing.dept_path = info.get("dept_path")
-        existing.dept_levels = info.get("dept_levels")
-        return existing
+    session.flush()
     return user
 
 
@@ -153,8 +137,6 @@ def batch_add_members(
     now = datetime.now(tz=_TZ8)
     existing_map = _bulk_fetch_users(session, ids)
     new_rows, update_rows, errors = _resolve_users_from_directory(ids, existing_map, now)
-    new_rows, update_rows, email_errors = _dedup_emails(session, new_rows, update_rows)
-    errors.extend(email_errors)
     all_users = _bulk_upsert_users(session, existing_map, new_rows, update_rows)
 
     if not all_users:
@@ -206,57 +188,6 @@ def _resolve_users_from_directory(
         else:
             new_rows.append({**row, "id": uuid4(), "created_at": now, "updated_at": now})
     return new_rows, update_rows, errors
-
-
-def _dedup_emails(
-    session: Session,
-    new_rows: list[dict],
-    update_rows: list[dict],
-) -> tuple[list[dict], list[dict], list[str]]:
-    """Remove rows whose email conflicts with DB or same batch.
-
-    Returns (clean_new_rows, clean_update_rows, errors).
-    Handles: new inserts AND existing-user updates that would violate email unique.
-    """
-    errors: list[str] = []
-    all_emails = [r["email"] for r in new_rows + update_rows if r.get("email")]
-    if not all_emails:
-        return new_rows, update_rows, errors
-
-    # Build map: email → employee_id for all DB users that own these emails
-    db_users = session.exec(select(User).where(User.email.in_(all_emails))).all()
-    email_owners: dict[str, str] = {u.email: u.employee_id for u in db_users if u.email}
-
-    seen: set[str] = set()
-    clean_new = _filter_rows_by_email(new_rows, email_owners, seen, errors)
-    clean_update = _filter_rows_by_email(update_rows, email_owners, seen, errors)
-    return clean_new, clean_update, errors
-
-
-def _filter_rows_by_email(
-    rows: list[dict],
-    email_owners: dict[str, str],
-    seen: set[str],
-    errors: list[str],
-) -> list[dict]:
-    """Keep rows whose email won't conflict; skip others with error message."""
-    clean: list[dict] = []
-    for row in rows:
-        email = row.get("email")
-        eid = row["employee_id"]
-        if not email:
-            clean.append(row)
-            continue
-        owner = email_owners.get(email)
-        if owner and owner != eid:
-            errors.append(f"{eid}: email {email} 已被 {owner} 占用")
-            continue
-        if email in seen:
-            errors.append(f"{eid}: email {email} 与同批次其他工号重复")
-            continue
-        seen.add(email)
-        clean.append(row)
-    return clean
 
 
 def _bulk_upsert_users(
