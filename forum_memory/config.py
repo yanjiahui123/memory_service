@@ -171,4 +171,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    # ConfigCenter 值作为 init kwargs，优先级高于环境变量和 .env
+    # 本地开发 (FM_DEPLOY_ENV=local) 返回空字典，走原有 .env 逻辑
+    from forum_memory.config_center import load_from_config_center
+
+    overrides = load_from_config_center()
+    return Settings(**overrides)
