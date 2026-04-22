@@ -2,6 +2,7 @@
 
 import logging
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -159,17 +160,24 @@ def _bulk_fetch_users(session: Session, ids: list[str]) -> dict[str, User]:
     return {u.employee_id: u for u in rows}
 
 
+_LOOKUP_WORKERS = 20
+
+
 def _resolve_users_from_directory(
     ids: list[str],
     existing_map: dict[str, User],
     now: datetime,
 ) -> tuple[list[dict], list[dict], list[str]]:
-    """Call external directory for each id; split into new/update rows and errors."""
+    """Call external directory concurrently; split into new/update rows and errors."""
+    with ThreadPoolExecutor(max_workers=_LOOKUP_WORKERS) as executor:
+        infos = list(executor.map(_lookup_external, ids))
+    lookup_results = dict(zip(ids, infos))
+
     new_rows: list[dict] = []
     update_rows: list[dict] = []
     errors: list[str] = []
     for eid in ids:
-        info = _lookup_external(eid)
+        info = lookup_results.get(eid)
         if not info:
             if eid not in existing_map:
                 errors.append(f"{eid}: 用户不存在")
