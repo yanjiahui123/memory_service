@@ -166,6 +166,41 @@ def delete_memory_doc(memory_id: UUID, index_name: str | None = None) -> bool:
         return False
 
 
+def bulk_delete_memory_docs(
+    entries: list[tuple[UUID, str | None]],
+    batch_size: int = 500,
+) -> tuple[int, set[str]]:
+    """Bulk-delete memory documents from ES grouped by index.
+
+    entries: [(memory_id, index_name), ...]; index_name=None → default index.
+    404 (already gone) counts as success. Returns (success_count, failed_ids).
+    """
+    es = get_es_client()
+    if not es or not entries:
+        return 0, set()
+    default_name = _default_index_name()
+    grouped: dict[str, list[UUID]] = {}
+    for mid, idx in entries:
+        grouped.setdefault(idx or default_name, []).append(mid)
+
+    total_ok = 0
+    failed_ids: set[str] = set()
+    for name, ids in grouped.items():
+        actions = [{"_op_type": "delete", "_index": name, "_id": str(mid)} for mid in ids]
+        ok, errors = bulk(es, actions, chunk_size=batch_size, raise_on_error=False)
+        total_ok += ok
+        for err in errors or []:
+            info = err.get("delete", {})
+            if info.get("status") == 404:
+                total_ok += 1
+                continue
+            if "_id" in info:
+                failed_ids.add(info["_id"])
+    if failed_ids:
+        logger.warning("Bulk delete had %d real errors (failed IDs: %s)", len(failed_ids), failed_ids)
+    return total_ok, failed_ids
+
+
 # ── Search ───────────────────────────────────────────────
 
 def _build_hybrid_query(query_text: str, filter_clauses: list[dict]) -> dict:

@@ -258,6 +258,29 @@ def _try_create_relation(session: Session, source_id: UUID, target_id: UUID, rel
         logger.warning("Failed to create %s relation %s -> %s", rel_type_str, source_id, target_id, exc_info=True)
 
 
+def refresh_quality_batch(session: Session, memory_ids) -> int:
+    """Recompute quality scores for a batch of memories in one pass.
+
+    Loads all memories via WHERE IN, recalculates in memory, sets indexed_at=None
+    so repair sensor will resync ES, single commit. Returns number changed.
+    """
+    from forum_memory.config import get_settings
+    ids = list(memory_ids)
+    if not ids:
+        return 0
+    memories = list(session.exec(select(Memory).where(Memory.id.in_(ids))).all())
+    if not memories:
+        return 0
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
+    threshold = getattr(get_settings(), "wrong_feedback_threshold", 3)
+    changed = _recalc_scores(memories, threshold)
+    for m in changed:
+        m.updated_at = now
+    if changed:
+        session.commit()
+    return len(changed)
+
+
 def refresh_quality(session: Session, memory_id: UUID) -> float:
     from forum_memory.config import get_settings
     memory = session.get(Memory, memory_id)
@@ -427,8 +450,8 @@ def transition_cold_memories(session: Session, cold_days: int = 180) -> int:
     if memories:
         session.commit()
     # Remove from ES after successful DB commit
-    for memory_id, index_name in es_cleanup:
-        es_service.delete_memory_doc(memory_id, index_name=index_name)
+    if es_cleanup:
+        es_service.bulk_delete_memory_docs(es_cleanup)
     logger.info("Transitioned %d memories to COLD", len(memories))
     return len(memories)
 

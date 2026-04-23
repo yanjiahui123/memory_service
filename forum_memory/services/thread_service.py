@@ -333,8 +333,7 @@ def delete_thread(session: Session, thread_id: UUID, deleted_by_admin: bool = Fa
         from forum_memory.services import es_service
         ns = session.get(Namespace, thread.namespace_id)
         index_name = ns.es_index_name if ns else None
-        for m in memories:
-            es_service.delete_memory_doc(m.id, index_name)
+        es_service.bulk_delete_memory_docs([(m.id, index_name) for m in memories])
 
     return thread
 
@@ -852,22 +851,39 @@ def _decrement_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
 
 def batch_timeout_threads(session: Session, timeout_days: int = 7) -> int:
     """Batch timeout-close OPEN threads older than timeout_days. Returns count closed."""
-    cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(days=timeout_days)
-    stmt = (
+    now = datetime.now(tz=timezone(timedelta(hours=8)))
+    cutoff = now - timedelta(days=timeout_days)
+    threads = list(session.exec(
         select(Thread)
         .where(Thread.status == ThreadStatus.OPEN)
         .where(Thread.created_at < cutoff)
+    ).all())
+    if not threads:
+        return 0
+    thread_ids = [t.id for t in threads]
+    session.execute(
+        sa_update(Thread)
+        .where(Thread.id.in_(thread_ids))
+        .values(
+            status=ThreadStatus.TIMEOUT_CLOSED,
+            resolved_type=ResolvedType.TIMEOUT,
+            timeout_at=now,
+        )
     )
-    threads = list(session.exec(stmt).all())
-    count = 0
-    for t in threads:
-        try:
-            timeout_close_thread(session, t.id)
-            count += 1
-        except ValueError:
-            logger.warning("Cannot timeout-close thread %s, skipping", t.id)
-    logger.info("Batch timeout-closed %d threads", count)
-    return count
+    events = [
+        DomainEvent(
+            event_type="thread.timeout_closed",
+            aggregate_type="Thread",
+            aggregate_id=t.id,
+            namespace_id=t.namespace_id,
+            payload={},
+        )
+        for t in threads
+    ]
+    session.add_all(events)
+    session.commit()
+    logger.info("Batch timeout-closed %d threads", len(threads))
+    return len(threads)
 
 
 def reconcile_comment_counts(session: Session) -> int:
@@ -946,12 +962,11 @@ def _update_resolved_citations(session: Session, thread_id: UUID) -> None:
     )
     session.commit()
 
-    from forum_memory.services.memory_service import refresh_quality
-    for mid in cited_ids:
-        try:
-            refresh_quality(session, mid)
-        except Exception:
-            logger.warning("Failed to refresh quality for memory %s after resolve", mid)
+    from forum_memory.services.memory_service import refresh_quality_batch
+    try:
+        refresh_quality_batch(session, cited_ids)
+    except Exception:
+        logger.warning("Failed to refresh quality for resolved thread %s", thread_id, exc_info=True)
 
 
 def _add_event(session: Session, event_type: str, agg_type: str, thread: Thread, payload: dict | None = None) -> None:
