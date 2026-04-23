@@ -46,11 +46,10 @@ def create_relation(
 
 
 def _both_memories_exist(session: Session, id_a: UUID, id_b: UUID) -> bool:
-    for mid in (id_a, id_b):
-        mem = session.get(Memory, mid)
-        if not mem:
-            return False
-    return True
+    rows = session.exec(
+        select(Memory.id).where(Memory.id.in_([id_a, id_b]))
+    ).all()
+    return len(set(rows)) == 2
 
 
 def _find_existing(

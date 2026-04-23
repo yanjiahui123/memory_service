@@ -20,26 +20,24 @@ logger = logging.getLogger(__name__)
 def backfill(dry_run: bool = False) -> int:
     """Create BoardFollow for every membership that lacks one. Returns count."""
     with Session(engine) as session:
-        members = session.exec(select(NamespaceModerator)).all()
-        created = 0
+        members = list(session.exec(select(NamespaceModerator)).all())
+        existing_rows = session.exec(
+            select(BoardFollow.user_id, BoardFollow.namespace_id)
+        ).all()
+        existing = {(row[0], row[1]) for row in existing_rows}
+
+        new_follows = []
         for mem in members:
-            existing = session.exec(
-                select(BoardFollow).where(
-                    BoardFollow.user_id == mem.user_id,
-                    BoardFollow.namespace_id == mem.namespace_id,
-                )
-            ).first()
-            if existing:
+            if (mem.user_id, mem.namespace_id) in existing:
                 continue
-            if not dry_run:
-                session.add(BoardFollow(user_id=mem.user_id, namespace_id=mem.namespace_id))
-            created += 1
+            new_follows.append(BoardFollow(user_id=mem.user_id, namespace_id=mem.namespace_id))
             logger.info("Follow: user=%s  ns=%s", mem.user_id, mem.namespace_id)
 
-        if not dry_run:
+        if not dry_run and new_follows:
+            session.add_all(new_follows)
             session.commit()
-        logger.info("%s %d follow records", "Would create" if dry_run else "Created", created)
-        return created
+        logger.info("%s %d follow records", "Would create" if dry_run else "Created", len(new_follows))
+        return len(new_follows)
 
 
 if __name__ == "__main__":
