@@ -19,7 +19,7 @@ from forum_memory.api.deps import (
     check_board_permission, get_current_user, get_db, get_managed_namespace_ids,
     require_admin, require_any_admin,
 )
-from forum_memory.models.enums import SystemRole, Authority
+from forum_memory.models.enums import SystemRole, Authority, MemoryStatus
 from forum_memory.models.memory import Memory
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.operation_log import OperationLog
@@ -350,7 +350,10 @@ def list_quality_alerts(
 
     from sqlmodel import func
 
-    base_where = Memory.pending_human_confirm.is_(True)
+    base_where = (
+        Memory.pending_human_confirm.is_(True)
+        & (Memory.status != MemoryStatus.DELETED)
+    )
 
     # Count query
     count_stmt = select(func.count()).select_from(Memory).where(base_where)

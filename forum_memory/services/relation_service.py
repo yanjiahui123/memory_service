@@ -101,31 +101,36 @@ def list_contradictions(
     size: int = 20,
     namespace_ids: list[UUID] | None = None,
 ) -> tuple[list[MemoryRelation], int]:
-    """List CONTRADICTS relations, optionally filtered by namespace(s)."""
+    """List CONTRADICTS relations, excluding pairs where either end is DELETED.
+
+    Optionally filtered by namespace(s) on the source memory.
+    """
     from sqlmodel import func
+    from sqlalchemy.orm import aliased
 
-    base_filter = MemoryRelation.relation_type == RelationType.CONTRADICTS
-    ns_join_needed = bool(namespace_id or namespace_ids)
+    src_mem = aliased(Memory)
+    tgt_mem = aliased(Memory)
 
-    # Count query
-    count_stmt = select(func.count()).select_from(MemoryRelation).where(base_filter)
-    if ns_join_needed:
-        count_stmt = count_stmt.join(Memory, MemoryRelation.source_memory_id == Memory.id)
+    def _apply_filters(stmt):
+        stmt = (
+            stmt.join(src_mem, MemoryRelation.source_memory_id == src_mem.id)
+                .join(tgt_mem, MemoryRelation.target_memory_id == tgt_mem.id)
+                .where(MemoryRelation.relation_type == RelationType.CONTRADICTS)
+                .where(src_mem.status != MemoryStatus.DELETED)
+                .where(tgt_mem.status != MemoryStatus.DELETED)
+        )
         if namespace_id:
-            count_stmt = count_stmt.where(Memory.namespace_id == namespace_id)
+            stmt = stmt.where(src_mem.namespace_id == namespace_id)
         elif namespace_ids:
-            count_stmt = count_stmt.where(Memory.namespace_id.in_(namespace_ids))
+            stmt = stmt.where(src_mem.namespace_id.in_(namespace_ids))
+        return stmt
+
+    count_stmt = _apply_filters(select(func.count()).select_from(MemoryRelation))
     total = session.exec(count_stmt).one()
 
-    # Page query
-    page_stmt = select(MemoryRelation).where(base_filter)
-    if ns_join_needed:
-        page_stmt = page_stmt.join(Memory, MemoryRelation.source_memory_id == Memory.id)
-        if namespace_id:
-            page_stmt = page_stmt.where(Memory.namespace_id == namespace_id)
-        elif namespace_ids:
-            page_stmt = page_stmt.where(Memory.namespace_id.in_(namespace_ids))
-    page_stmt = page_stmt.order_by(MemoryRelation.created_at.desc())
+    page_stmt = _apply_filters(select(MemoryRelation)).order_by(
+        MemoryRelation.created_at.desc()
+    )
     paginated = list(session.exec(page_stmt.offset((page - 1) * size).limit(size)).all())
     return paginated, total
 
