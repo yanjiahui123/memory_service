@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy import delete as sa_delete
 from sqlmodel import Session, select
 
 from forum_memory.core.source_context import SourceContext
@@ -56,27 +57,32 @@ def re_extract(session: Session, source_type: str, source_id: UUID) -> list[UUID
 
 def _delete_old_records(session: Session, source_type: str, source_id: UUID) -> None:
     """Delete old extraction records for the given source."""
-    stmt = select(ExtractionRecord).where(
-        ExtractionRecord.source_type == source_type,
-        ExtractionRecord.source_id == source_id,
+    session.execute(
+        sa_delete(ExtractionRecord).where(
+            ExtractionRecord.source_type == source_type,
+            ExtractionRecord.source_id == source_id,
+        )
     )
-    for rec in session.exec(stmt).all():
-        session.delete(rec)
 
 
 def _soft_delete_old_memories(session, source_id: UUID, es_service) -> None:
     """Soft-delete old memories sourced from this source and remove from ES."""
     from forum_memory.models.memory import Memory
-    from forum_memory.services.memory_service import _resolve_es_index
+    from forum_memory.services.memory_service import _build_ns_index_cache
 
-    mem_stmt = select(Memory).where(
-        Memory.source_id == source_id,
-        Memory.status != MemoryStatus.DELETED,
-    )
-    for m in session.exec(mem_stmt).all():
-        index_name = _resolve_es_index(session, m.namespace_id)
+    memories = list(session.exec(
+        select(Memory).where(
+            Memory.source_id == source_id,
+            Memory.status != MemoryStatus.DELETED,
+        )
+    ).all())
+    if not memories:
+        return
+    ns_cache = _build_ns_index_cache(session, memories)
+    es_entries = [(m.id, ns_cache.get(m.namespace_id)) for m in memories]
+    for m in memories:
         m.status = MemoryStatus.DELETED
-        es_service.delete_memory_doc(m.id, index_name=index_name)
+    es_service.bulk_delete_memory_docs(es_entries)
 
 
 def run_extraction(session: Session, source_type: str, source_id: UUID) -> list[UUID]:
@@ -172,21 +178,26 @@ def rollback_partial_memories(session: Session, source_id: UUID, since: datetime
     """Soft-delete memories created during a failed extraction run and remove from ES."""
     from forum_memory.models.memory import Memory
     from forum_memory.services import es_service
+    from forum_memory.services.memory_service import _build_ns_index_cache
 
-    stmt = select(Memory).where(
-        Memory.source_id == source_id,
-        Memory.status != MemoryStatus.DELETED,
-        Memory.created_at >= since,
-    )
-    memories = list(session.exec(stmt).all())
+    memories = list(session.exec(
+        select(Memory).where(
+            Memory.source_id == source_id,
+            Memory.status != MemoryStatus.DELETED,
+            Memory.created_at >= since,
+        )
+    ).all())
+    if not memories:
+        return
+    ns_cache = _build_ns_index_cache(session, memories)
+    es_entries = [(m.id, ns_cache.get(m.namespace_id)) for m in memories]
     for m in memories:
         m.status = MemoryStatus.DELETED
-        try:
-            es_service.delete_memory_doc(m.id)
-        except Exception:
-            pass  # ES cleanup is best-effort; repair sensor will handle leftovers
-    if memories:
-        logger.info("Rolled back %d partial memories for source %s", len(memories), source_id)
+    try:
+        es_service.bulk_delete_memory_docs(es_entries)
+    except Exception:
+        logger.warning("ES bulk delete failed during rollback", exc_info=True)  # repair sensor will retry
+    logger.info("Rolled back %d partial memories for source %s", len(memories), source_id)
 
 
 def _create_record(

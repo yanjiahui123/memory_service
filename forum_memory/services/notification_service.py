@@ -93,11 +93,17 @@ def notify_admins_on_new_thread(session: Session, thread: Thread) -> None:
         NamespaceModerator.namespace_id == thread.namespace_id,
     )
     mod_user_ids = list(session.exec(stmt).all())
-    for mod_id in mod_user_ids:
-        create_notification(
-            session, mod_id, thread.author_id,
-            "new_thread_in_namespace", thread.id,
+    notifs = [
+        Notification(
+            recipient_id=mid,
+            actor_id=thread.author_id,
+            notification_type="new_thread_in_namespace",
+            thread_id=thread.id,
         )
+        for mid in mod_user_ids if mid != thread.author_id
+    ]
+    if notifs:
+        session.add_all(notifs)
 
 
 # ── Queries ──────────────────────────────────────────────────────────────────

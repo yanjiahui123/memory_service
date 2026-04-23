@@ -890,29 +890,30 @@ def reconcile_comment_counts(session: Session) -> int:
     """Fix drifted comment_count by reconciling against actual Comment rows.
     Returns the number of threads corrected.
     """
-    from sqlmodel import func
     from sqlalchemy import text as sa_text
 
-    rows = session.execute(sa_text(
+    drift_sql = (
         "SELECT t.id, t.comment_count, COALESCE(c.cnt, 0) AS actual "
         "FROM memo_threads t "
         "LEFT JOIN (SELECT thread_id, COUNT(*) AS cnt FROM memo_comments "
         "           WHERE deleted_at IS NULL GROUP BY thread_id) c "
         "  ON t.id = c.thread_id "
         "WHERE t.status != 'DELETED' AND t.comment_count != COALESCE(c.cnt, 0)"
-    )).all()
-
+    )
+    rows = session.execute(sa_text(drift_sql)).all()
+    if not rows:
+        return 0
     for row in rows:
-        thread = session.get(Thread, row[0])
-        if thread:
-            logger.info(
-                "comment_count drift: thread %s had %d, actual %d",
-                thread.id, thread.comment_count, row[2],
-            )
-            thread.comment_count = row[2]
-
-    if rows:
-        session.commit()
+        logger.info(
+            "comment_count drift: thread %s had %d, actual %d",
+            row[0], row[1], row[2],
+        )
+    session.execute(sa_text(
+        "UPDATE memo_threads t "
+        f"SET comment_count = sub.actual FROM ({drift_sql}) sub "
+        "WHERE t.id = sub.id"
+    ))
+    session.commit()
     logger.info("Reconciled comment_count for %d threads", len(rows))
     return len(rows)
 

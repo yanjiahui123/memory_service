@@ -34,19 +34,17 @@ def _build_share_link_read(
     link: BoardShareLink,
 ) -> dict:
     """Build ShareLinkRead dict with namespace display names."""
-    junctions = session.exec(
+    junctions = list(session.exec(
         select(BoardShareLinkNamespace).where(
             BoardShareLinkNamespace.share_link_id == link.id,
         )
-    ).all()
-    ns_infos = []
-    for j in junctions:
-        ns = session.get(Namespace, j.namespace_id)
-        if ns:
-            ns_infos.append({
-                "namespace_id": str(ns.id),
-                "display_name": ns.display_name,
-            })
+    ).all())
+    ns_map = _load_ns_map(session, [j.namespace_id for j in junctions])
+    ns_infos = [
+        {"namespace_id": str(ns_map[j.namespace_id].id),
+         "display_name": ns_map[j.namespace_id].display_name}
+        for j in junctions if j.namespace_id in ns_map
+    ]
     return {
         "id": link.id,
         "code": link.code,
@@ -56,6 +54,14 @@ def _build_share_link_read(
         "created_at": link.created_at,
         "namespaces": ns_infos,
     }
+
+
+def _load_ns_map(session: Session, ns_ids: list) -> dict:
+    """Batch-load Namespaces by id list, return {id: Namespace}."""
+    if not ns_ids:
+        return {}
+    rows = session.exec(select(Namespace).where(Namespace.id.in_(ns_ids))).all()
+    return {ns.id: ns for ns in rows}
 
 
 # ── Admin endpoints (super_admin only) ─────────────────────
@@ -71,8 +77,10 @@ def create_share_link(
         raise HTTPException(400, "至少选择一个板块")
 
     # Validate all namespaces exist
-    for ns_id in data.namespace_ids:
-        ns = session.get(Namespace, UUID(ns_id))
+    ns_uuids = [UUID(ns_id) for ns_id in data.namespace_ids]
+    ns_map = _load_ns_map(session, ns_uuids)
+    for ns_id, uid in zip(data.namespace_ids, ns_uuids):
+        ns = ns_map.get(uid)
         if not ns or not ns.is_active:
             raise HTTPException(404, f"板块 {ns_id} 不存在或已删除")
 
@@ -137,19 +145,18 @@ def get_share_link_info(
     if not link or not link.is_active:
         raise HTTPException(404, "分享链接无效或已撤销")
 
-    junctions = session.exec(
+    junctions = list(session.exec(
         select(BoardShareLinkNamespace).where(
             BoardShareLinkNamespace.share_link_id == link.id,
         )
-    ).all()
-    ns_infos = []
-    for j in junctions:
-        ns = session.get(Namespace, j.namespace_id)
-        if ns and ns.is_active:
-            ns_infos.append({
-                "namespace_id": str(ns.id),
-                "display_name": ns.display_name,
-            })
+    ).all())
+    ns_map = _load_ns_map(session, [j.namespace_id for j in junctions])
+    ns_infos = [
+        {"namespace_id": str(ns_map[j.namespace_id].id),
+         "display_name": ns_map[j.namespace_id].display_name}
+        for j in junctions
+        if j.namespace_id in ns_map and ns_map[j.namespace_id].is_active
+    ]
 
     return {"code": link.code, "name": link.name, "namespaces": ns_infos}
 
@@ -167,15 +174,16 @@ def join_via_share_link(
     if not link or not link.is_active:
         raise HTTPException(400, "分享链接无效或已撤销")
 
-    junctions = session.exec(
+    junctions = list(session.exec(
         select(BoardShareLinkNamespace).where(
             BoardShareLinkNamespace.share_link_id == link.id,
         )
-    ).all()
+    ).all())
+    ns_map = _load_ns_map(session, [j.namespace_id for j in junctions])
 
     joined = []
     for j in junctions:
-        ns = session.get(Namespace, j.namespace_id)
+        ns = ns_map.get(j.namespace_id)
         if not ns or not ns.is_active:
             continue
         _upsert_membership(session, j.namespace_id, user.id, "member")
