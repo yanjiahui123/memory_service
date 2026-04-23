@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Session, select
 
@@ -333,27 +334,56 @@ def batch_remove_members(
     ns_id: UUID,
     user_ids: list[UUID],
 ) -> dict:
-    """Batch remove members from a namespace. One commit for all deletes."""
-    removed, errors, ex_moderator_ids = 0, [], []
-    for uid in user_ids:
-        stmt = select(NamespaceModerator).where(
-            NamespaceModerator.user_id == uid,
+    """Batch remove members. One SELECT, one DELETE, one commit."""
+    if not user_ids:
+        return {"removed": 0, "errors": []}
+    members = session.exec(
+        select(NamespaceModerator).where(
             NamespaceModerator.namespace_id == ns_id,
+            NamespaceModerator.user_id.in_(user_ids),
         )
-        mem = session.exec(stmt).first()
-        if not mem:
-            errors.append(f"{uid}: 不是此板块成员")
-            continue
-        if mem.role == MemberRole.MODERATOR:
-            ex_moderator_ids.append(uid)
-        session.delete(mem)
-        removed += 1
+    ).all()
+    found_ids = {m.user_id for m in members}
+    errors = [f"{uid}: 不是此板块成员" for uid in user_ids if uid not in found_ids]
+    ex_moderator_ids = [m.user_id for m in members if m.role == MemberRole.MODERATOR]
+    if not found_ids:
+        return {"removed": 0, "errors": errors}
+    session.exec(
+        delete(NamespaceModerator).where(
+            NamespaceModerator.namespace_id == ns_id,
+            NamespaceModerator.user_id.in_(found_ids),
+        )
+    )
     session.commit()
-    for uid in ex_moderator_ids:
-        user = session.get(User, uid)
-        if user:
-            _sync_role_after_demote(session, user)
-    return {"removed": removed, "errors": errors}
+    if ex_moderator_ids:
+        _batch_sync_role_after_demote(session, ex_moderator_ids)
+    return {"removed": len(found_ids), "errors": errors}
+
+
+def _batch_sync_role_after_demote(session: Session, user_ids: list[UUID]) -> None:
+    """Batch-revert BOARD_ADMIN to USER for users with no remaining moderator roles."""
+    admin_users = session.exec(
+        select(User).where(
+            User.id.in_(user_ids),
+            User.role == SystemRole.BOARD_ADMIN,
+        )
+    ).all()
+    if not admin_users:
+        return
+    admin_ids = [u.id for u in admin_users]
+    still_mod_rows = session.exec(
+        select(NamespaceModerator).where(
+            NamespaceModerator.user_id.in_(admin_ids),
+            NamespaceModerator.role == MemberRole.MODERATOR,
+        )
+    ).all()
+    still_moderator_ids = {m.user_id for m in still_mod_rows}
+    demote_users = [u for u in admin_users if u.id not in still_moderator_ids]
+    for user in demote_users:
+        user.role = SystemRole.USER
+        session.add(user)
+    if demote_users:
+        session.commit()
 
 
 # ── Role sync helpers ────────────────────────────────────────
