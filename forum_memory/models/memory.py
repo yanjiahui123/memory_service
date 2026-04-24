@@ -61,8 +61,9 @@ class Memory(UUIDMixin, TimestampMixin, table=True):
     # ES sync tracking — NULL means ES index pending/failed
     indexed_at: datetime | None = Field(default=None)
 
-    # Human confirmation flag
+    # Human confirmation flag + reason classification
     pending_human_confirm: bool = Field(default=False)
+    pending_reason: str | None = Field(default=None, max_length=50)
 
     # Flexible extra data
     extra: dict = Field(default_factory=dict, sa_column=Column("extra", JSON, nullable=False, server_default="{}"))

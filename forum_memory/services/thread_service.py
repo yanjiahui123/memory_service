@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from forum_memory.models.thread import Thread, Comment
 from forum_memory.models.event import DomainEvent
 from forum_memory.models.namespace import Namespace
-from forum_memory.models.enums import ThreadStatus, ResolvedType
+from forum_memory.models.enums import ThreadStatus, ResolvedType, PendingReason
 from forum_memory.core.state_machine import can_transition
 from forum_memory.schemas.thread import ThreadCreate, CommentCreate
 from forum_memory.schemas.memory import MemorySearchRequest
@@ -312,6 +312,7 @@ def delete_thread(session: Session, thread_id: UUID, deleted_by_admin: bool = Fa
         if deleted_by_admin:
             for m in memories:
                 m.pending_human_confirm = True
+                m.pending_reason = PendingReason.ADMIN_DELETE
             logger.info(
                 "Admin deleted thread %s: %d memories marked pending_human_confirm",
                 thread_id, len(memories),

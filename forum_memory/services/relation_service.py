@@ -244,10 +244,11 @@ def _create_supersedes_edge(session: Session, winner_id: UUID, loser_id: UUID) -
 
 
 def _clear_pending_flag(session: Session, memory_id: UUID) -> None:
-    """Clear pending_human_confirm flag."""
+    """Clear pending_human_confirm flag and pending_reason."""
     mem = session.get(Memory, memory_id)
     if mem and mem.pending_human_confirm:
         mem.pending_human_confirm = False
+        mem.pending_reason = None
 
 
 def _log_resolution(

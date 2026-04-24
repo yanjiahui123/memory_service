@@ -17,6 +17,7 @@ class MemoryCreate(BaseModel):
     resolved_type: str | None = None
     authority: str | None = None
     pending_human_confirm: bool = False
+    pending_reason: str | None = None
     gate_confidence: float | None = None
 
 
@@ -50,6 +51,7 @@ class MemoryRead(BaseModel):
     cite_count: int
     resolved_citation_count: int = 0
     pending_human_confirm: bool
+    pending_reason: str | None = None
     indexed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

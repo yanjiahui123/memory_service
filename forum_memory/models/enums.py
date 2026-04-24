@@ -41,6 +41,18 @@ class AUDNAction(str, Enum):
     NONE = "NONE"
 
 
+class PendingReason(str, Enum):
+    """Why a memory was flagged pending_human_confirm.
+
+    None (NULL) = legacy or unspecified. Used to classify /quality-alerts and
+    to let /contradictions own AUDN_CONFLICT exclusively (no double counting).
+    """
+    AUDN_CONFLICT = "AUDN_CONFLICT"        # AUDN 与 LOCKED 记忆冲突（附带 CONTRADICTS 关系）
+    WRONG_FEEDBACK = "WRONG_FEEDBACK"      # wrong_count 超阈值
+    ADMIN_DELETE = "ADMIN_DELETE"          # 管理员删除帖子，关联记忆待复核
+    TIMEOUT = "TIMEOUT"                    # 帖子超时关闭，记忆待人工评估
+
+
 # ── User / Role enums ────────────────────────────────────────
 
 class UserRole(str, Enum):

@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from forum_memory.models.memory import Memory
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.operation_log import OperationLog
-from forum_memory.models.enums import Authority, MemoryStatus, OperationType, AUDNAction
+from forum_memory.models.enums import Authority, MemoryStatus, OperationType, AUDNAction, PendingReason
 from forum_memory.core.quality import compute_quality_score
 from forum_memory.core.audn import AUDNResult
 from forum_memory.schemas.memory import MemoryCreate, MemoryUpdate, MemoryFilter
@@ -91,13 +91,14 @@ def get_memory(session: Session, memory_id: UUID) -> Memory | None:
 
 
 def create_memory(session: Session, data: MemoryCreate) -> Memory:
-    create_data = data.model_dump(exclude={"authority", "pending_human_confirm", "gate_confidence"})
+    create_data = data.model_dump(exclude={"authority", "pending_human_confirm", "pending_reason", "gate_confidence"})
     memory = Memory(**create_data)
     # Apply optional authority/pending from schema
     if data.authority:
         memory.authority = Authority(data.authority)
     if data.pending_human_confirm:
         memory.pending_human_confirm = data.pending_human_confirm
+        memory.pending_reason = data.pending_reason
     # Store gate confidence for future quality recalculations
     if data.gate_confidence is not None:
         memory.gate_confidence = data.gate_confidence
@@ -165,6 +166,7 @@ def change_authority(session: Session, memory_id: UUID, authority: str, reason: 
     old = memory.authority
     memory.authority = Authority(authority)
     memory.pending_human_confirm = False
+    memory.pending_reason = None
     memory.updated_at = datetime.now(tz=timezone(timedelta(hours=8)))
     op = OperationType.PROMOTE if authority == "LOCKED" else OperationType.DEMOTE
     _add_log(session, memory, op, reason=reason or f"{old} -> {authority}", before=before)
@@ -194,6 +196,7 @@ def _apply_add(session: Session, new_fact: MemoryCreate, result: AUDNResult) -> 
     """ADD branch: create memory, flag for review if conflict with LOCKED."""
     if result.conflict_with_locked:
         new_fact.pending_human_confirm = True
+        new_fact.pending_reason = PendingReason.AUDN_CONFLICT
         logger.warning(
             "New fact conflicts with LOCKED memory %s — flagging for human review. Reason: %s",
             result.conflict_with_locked, result.reason,
@@ -306,6 +309,7 @@ def refresh_quality(session: Session, memory_id: UUID) -> float:
     threshold = getattr(settings, 'wrong_feedback_threshold', 3)
     if memory.wrong_count >= threshold and not memory.pending_human_confirm:
         memory.pending_human_confirm = True
+        memory.pending_reason = PendingReason.WRONG_FEEDBACK
         logger.warning(
             "Memory %s flagged for review: wrong_count=%d (threshold=%d), authority=%s",
             memory.id, memory.wrong_count, threshold, memory.authority,
@@ -327,6 +331,7 @@ def _apply_update(session: Session, result: AUDNResult,
         # flagged for human review instead of silently dropping it
         if new_fact:
             new_fact.pending_human_confirm = True
+            new_fact.pending_reason = PendingReason.AUDN_CONFLICT
             logger.warning(
                 "AUDN wanted to UPDATE LOCKED memory %s — creating new fact for human review. Reason: %s",
                 result.target_id, result.reason,
@@ -366,6 +371,7 @@ def _apply_delete(session: Session, result: AUDNResult) -> None:
         # Cannot delete LOCKED memory; flag it for human review
         # (the caller will still create the new fact, which may contradict this one)
         memory.pending_human_confirm = True
+        memory.pending_reason = PendingReason.AUDN_CONFLICT
         _add_log(session, memory, OperationType.UPDATE,
                  reason=f"AUDN wanted DELETE but memory is LOCKED: {result.reason}")
         session.commit()
@@ -496,6 +502,7 @@ def _recalc_scores(memories: list[Memory], wrong_threshold: int) -> list[Memory]
         )
         if m.wrong_count >= wrong_threshold and not m.pending_human_confirm:
             m.pending_human_confirm = True
+            m.pending_reason = PendingReason.WRONG_FEEDBACK
         if abs(new_score - old_score) > 0.001:
             m.quality_score = new_score
             m.indexed_at = None

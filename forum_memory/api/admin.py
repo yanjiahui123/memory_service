@@ -19,7 +19,7 @@ from forum_memory.api.deps import (
     check_board_permission, get_current_user, get_db, get_managed_namespace_ids,
     require_admin, require_any_admin,
 )
-from forum_memory.models.enums import SystemRole, Authority, MemoryStatus
+from forum_memory.models.enums import SystemRole, Authority, MemoryStatus, PendingReason
 from forum_memory.models.memory import Memory
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.operation_log import OperationLog
@@ -325,6 +325,7 @@ class QualityAlertItem(BaseModel):
     not_useful_count: int
     cite_count: int
     resolved_citation_count: int
+    pending_reason: str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -336,6 +337,10 @@ class QualityAlertList(BaseModel):
 @router.get("/quality-alerts", response_model=QualityAlertList)
 def list_quality_alerts(
     namespace_id: UUID | None = Query(None),
+    reason: str | None = Query(
+        None,
+        description="可选：按 pending_reason 过滤（WRONG_FEEDBACK / ADMIN_DELETE / TIMEOUT）。留空返回所有非矛盾类告警。",
+    ),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     session: Session = Depends(get_db),
@@ -343,7 +348,8 @@ def list_quality_alerts(
 ) -> QualityAlertList:
     """返回 pending_human_confirm=True 的记忆（质量告警列表），按 wrong_count 降序。
 
-    可按板块过滤。超级管理员或板块管理员均可访问。
+    默认排除 AUDN_CONFLICT（由 /contradictions 接口负责展示，避免重复计数）。
+    可按板块、pending_reason 过滤。超级管理员或板块管理员均可访问。
     """
     if namespace_id:
         check_board_permission(namespace_id, session, user)
@@ -354,6 +360,15 @@ def list_quality_alerts(
         Memory.pending_human_confirm.is_(True)
         & (Memory.status != MemoryStatus.DELETED)
     )
+    if reason:
+        base_where = base_where & (Memory.pending_reason == reason)
+    else:
+        # 默认排除 AUDN_CONFLICT（已在 /contradictions 展示），
+        # 允许 NULL（历史数据）保留在质量告警中。
+        base_where = base_where & (
+            (Memory.pending_reason != PendingReason.AUDN_CONFLICT)
+            | Memory.pending_reason.is_(None)
+        )
 
     # Count query
     count_stmt = select(func.count()).select_from(Memory).where(base_where)
@@ -377,15 +392,67 @@ def dismiss_quality_alert(
     session: Session = Depends(get_db),
     user: User = Depends(require_any_admin),
 ) -> QualityAlertItem:
-    """管理员复核后关闭质量告警（清除 pending_human_confirm 标记）。"""
+    """管理员复核后关闭质量告警（清除 pending_human_confirm 与 pending_reason）。"""
     memory = session.get(Memory, memory_id)
     if not memory:
         raise HTTPException(404, "记忆不存在")
     check_board_permission(memory.namespace_id, session, user)
     memory.pending_human_confirm = False
+    memory.pending_reason = None
     session.commit()
     session.refresh(memory)
     return memory
+
+
+# ─── Low Quality ─────────────────────────────────────────────────────────────
+
+@router.get("/low-quality", response_model=QualityAlertList)
+def list_low_quality(
+    namespace_id: UUID | None = Query(None),
+    threshold: float | None = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="可选：覆盖配置中的 low_quality_threshold (默认 0.3)。",
+    ),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    session: Session = Depends(get_db),
+    user: User = Depends(require_any_admin),
+) -> QualityAlertList:
+    """低质量记忆列表：ACTIVE 状态下 quality_score <= 阈值 且未在质量告警中。
+
+    默认阈值来自 `low_quality_threshold` 配置（0.3）。已在质量告警中的记忆
+    （pending_human_confirm=True）不重复出现。
+    """
+    if namespace_id:
+        check_board_permission(namespace_id, session, user)
+
+    from sqlmodel import func
+    from forum_memory.config import get_settings
+
+    cutoff = threshold if threshold is not None else getattr(
+        get_settings(), "low_quality_threshold", 0.3,
+    )
+
+    base_where = (
+        (Memory.status == MemoryStatus.ACTIVE)
+        & (Memory.quality_score <= cutoff)
+        & Memory.pending_human_confirm.is_(False)
+    )
+
+    count_stmt = select(func.count()).select_from(Memory).where(base_where)
+    count_stmt = _apply_namespace_filter(count_stmt, namespace_id, session, user)
+    total = session.exec(count_stmt).one()
+
+    page_stmt = (
+        select(Memory)
+        .where(base_where)
+        .order_by(Memory.quality_score.asc(), Memory.updated_at.desc())
+    )
+    page_stmt = _apply_namespace_filter(page_stmt, namespace_id, session, user)
+    items = list(session.exec(page_stmt.offset((page - 1) * size).limit(size)).all())
+    return QualityAlertList(items=items, total=total)
 
 
 # ─── Contradictions ───────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 from forum_memory.core.source_context import SourceContext
 from forum_memory.core.source_registry import get_adapter
 from forum_memory.models.extraction import ExtractionRecord
-from forum_memory.models.enums import AUDNAction, ExtractionStatus, MemoryStatus
+from forum_memory.models.enums import AUDNAction, ExtractionStatus, MemoryStatus, PendingReason, ResolvedType
 from forum_memory.core.extraction import (
     build_compress_messages,
     build_structure_messages, parse_structured_analysis,
@@ -386,7 +386,16 @@ def _validate_audn_target(result: AUDNResult, similar: list[dict], ctx: SourceCo
 
 
 def _build_memory_create(ctx: SourceContext, fact: dict) -> MemoryCreate:
-    """Build a MemoryCreate from SourceContext and a fact dict."""
+    """Build a MemoryCreate from SourceContext and a fact dict.
+
+    Memories extracted from TIMEOUT-closed threads are auto-flagged for review
+    with pending_reason=TIMEOUT.
+    """
+    pending = ctx.pending_human_confirm
+    reason = None
+    if ctx.resolved_type == ResolvedType.TIMEOUT.value:
+        pending = True
+        reason = PendingReason.TIMEOUT
     return MemoryCreate(
         namespace_id=ctx.namespace_id,
         content=fact["content"],
@@ -398,6 +407,7 @@ def _build_memory_create(ctx: SourceContext, fact: dict) -> MemoryCreate:
         source_role=ctx.source_role,
         resolved_type=ctx.resolved_type,
         authority=ctx.authority.value,
-        pending_human_confirm=ctx.pending_human_confirm,
+        pending_human_confirm=pending,
+        pending_reason=reason,
         gate_confidence=fact.get("gate_confidence"),
     )

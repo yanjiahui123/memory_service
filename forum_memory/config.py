@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     wrong_feedback_threshold: int = 3
     promote_useful_ratio: float = 0.8
     promote_min_feedback: int = 10
+    low_quality_threshold: float = 0.3
     cold_inactive_days: int = 180
     archive_inactive_days: int = 365
 
