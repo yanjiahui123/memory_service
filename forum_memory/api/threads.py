@@ -363,11 +363,13 @@ def delete_thread(
     is_admin = user.role in (SystemRole.SUPER_ADMIN, SystemRole.BOARD_ADMIN)
     is_author = thread.author_id == user.id
 
-    if is_admin:
+    # 作者自删优先于管理员身份判断：兼任管理员的作者删自己的帖应视为"撤回"，
+    # 走记忆级联软删路径；仅当删除他人帖子时才触发管理员审核路径。
+    if is_author:
+        deleted_by_admin = False
+    elif is_admin:
         check_board_permission(thread.namespace_id, session, user)
         deleted_by_admin = True
-    elif is_author:
-        deleted_by_admin = False
     else:
         raise HTTPException(403, "只有帖子作者或管理员可以删除帖子")
 
