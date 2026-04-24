@@ -253,7 +253,7 @@ def _build_hits(session: Session, memories: list[Memory], env: str | None) -> li
     # Batch update retrieval stats using SQL expression to avoid lost-update under concurrency
     if memory_ids:
         from sqlalchemy import update as sa_update
-        session.execute(
+        session.exec(
             sa_update(Memory)
             .where(Memory.id.in_(memory_ids))
             .values(

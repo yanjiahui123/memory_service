@@ -134,7 +134,7 @@ def _decrement_counter(session: Session, memory_id: UUID, feedback_type: str) ->
         .where(Memory.id == memory_id)
         .values(**{attr: func.greatest(column - 1, 0)})
     )
-    session.execute(stmt)
+    session.exec(stmt)
 
 
 def _update_counter(session: Session, memory_id: UUID, feedback_type: str) -> None:
@@ -147,4 +147,4 @@ def _update_counter(session: Session, memory_id: UUID, feedback_type: str) -> No
         .where(Memory.id == memory_id)
         .values(**{attr: column + 1})
     )
-    session.execute(stmt)
+    session.exec(stmt)

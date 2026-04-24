@@ -114,7 +114,7 @@ def get_thread(session: Session, thread_id: UUID) -> Thread | None:
 
 def increment_view_count(session: Session, thread_id: UUID) -> None:
     """Atomic +1 on view_count, no select needed."""
-    session.execute(
+    session.exec(
         sa_update(Thread).where(Thread.id == thread_id).values(view_count=Thread.view_count + 1)
     )
     session.commit()
@@ -832,7 +832,7 @@ def _increment_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
     if not cited_ids:
         return
     from forum_memory.models.memory import Memory
-    session.execute(
+    session.exec(
         sa_update(Memory).where(Memory.id.in_(cited_ids)).values(cite_count=Memory.cite_count + 1)
     )
 
@@ -843,7 +843,7 @@ def _decrement_cite_counts(session: Session, cited_ids: list[UUID]) -> None:
         return
     from forum_memory.models.memory import Memory
     from sqlalchemy import case
-    session.execute(
+    session.exec(
         sa_update(Memory).where(Memory.id.in_(cited_ids)).values(
             cite_count=case((Memory.cite_count > 0, Memory.cite_count - 1), else_=0)
         )
@@ -862,7 +862,7 @@ def batch_timeout_threads(session: Session, timeout_days: int = 7) -> int:
     if not threads:
         return 0
     thread_ids = [t.id for t in threads]
-    session.execute(
+    session.exec(
         sa_update(Thread)
         .where(Thread.id.in_(thread_ids))
         .values(
@@ -957,7 +957,7 @@ def _update_resolved_citations(session: Session, thread_id: UUID) -> None:
     if not cited_ids:
         return
 
-    session.execute(
+    session.exec(
         sa_update(Memory)
         .where(Memory.id.in_(cited_ids))
         .values(resolved_citation_count=Memory.resolved_citation_count + 1)

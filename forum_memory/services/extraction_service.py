@@ -57,7 +57,7 @@ def re_extract(session: Session, source_type: str, source_id: UUID) -> list[UUID
 
 def _delete_old_records(session: Session, source_type: str, source_id: UUID) -> None:
     """Delete old extraction records for the given source."""
-    session.execute(
+    session.exec(
         sa_delete(ExtractionRecord).where(
             ExtractionRecord.source_type == source_type,
             ExtractionRecord.source_id == source_id,
