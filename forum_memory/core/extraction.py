@@ -109,11 +109,18 @@ def build_gate_messages(knowledge_points: list[dict]) -> list[dict]:
 
 
 def parse_gated_facts(raw: str) -> list[dict]:
-    """Parse gate output; convert passing atoms to standard fact format.
+    """Parse gate output; convert atoms to standard fact format.
 
     Standard fact format:
-        {"content": str, "tags": list, "knowledge_type": str, "gate_confidence": float}
+        {"content": str, "tags": list, "knowledge_type": str,
+         "gate_confidence": float, "low_quality": bool}
+
+    Atoms with pass_gate=True 正常入库；pass_gate=False 但 gate_confidence ≥
+    low_quality_gate_min 的原子标记 low_quality=True，由下游写入 pending 队列
+    供人工评估；低于阈值的直接丢弃。
     """
+    from forum_memory.config import get_settings
+
     text = raw.strip()
     if text.startswith("```"):
         text = _strip_code_fences(text)
@@ -125,24 +132,27 @@ def parse_gated_facts(raw: str) -> list[dict]:
     if not isinstance(items, list):
         return []
 
+    low_q_min = get_settings().low_quality_gate_min
     results = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        if not item.get("pass_gate"):
+        confidence = _parse_gate_confidence(item)
+        passed = bool(item.get("pass_gate"))
+        if not passed and confidence < low_q_min:
             logger.debug(
-                "Knowledge point failed gate: %s — %s",
+                "Knowledge point dropped (low confidence %.2f): %s — %s",
+                confidence,
                 str(item.get("what", ""))[:80],
                 item.get("gate_reason", ""),
             )
             continue
-        content = _compose_content(item)
-        confidence = _parse_gate_confidence(item)
         results.append({
-            "content": content,
+            "content": _compose_content(item),
             "tags": item.get("tags") or [],
             "knowledge_type": item.get("knowledge_type") or "faq",
             "gate_confidence": confidence,
+            "low_quality": not passed,
         })
     return results
 

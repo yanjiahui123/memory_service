@@ -51,6 +51,7 @@ class PendingReason(str, Enum):
     WRONG_FEEDBACK = "WRONG_FEEDBACK"      # wrong_count 超阈值
     ADMIN_DELETE = "ADMIN_DELETE"          # 管理员删除帖子，关联记忆待复核
     TIMEOUT = "TIMEOUT"                    # 帖子超时关闭，记忆待人工评估
+    LOW_QUALITY = "LOW_QUALITY"            # 质量门控未通过但置信度未低到丢弃（低质量原子，需人工评估）
 
 
 # ── User / Role enums ────────────────────────────────────────

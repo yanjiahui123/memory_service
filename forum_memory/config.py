@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     reranker_top_k: int = 5
     recall_top_k: int = 50
 
+    # Extraction pipeline tuning
+    compress_threshold_chars: int = 3000  # discussion 超过此长度才触发压缩阶段
+    audn_concurrency: int = 4             # AUDN LLM 决策阶段的并发度（I/O bound）
+    audn_knn_min_score: float = 0.6       # AUDN KNN 召回最低 ES 分数（过滤低相似候选，减少 LLM 噪声）
+    low_quality_gate_min: float = 0.3     # 未通过 Gate 但 gate_confidence ≥ 此阈值的原子转入 pending 而非丢弃
+
     # RAG knowledge base
     rag_base_url: str = ""
     rag_timeout: int = 300

@@ -7,12 +7,14 @@ The pipeline operates on SourceContext (title, question, discussion).
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete
 from sqlmodel import Session, select
 
+from forum_memory.config import get_settings
 from forum_memory.core.source_context import SourceContext
 from forum_memory.core.source_registry import get_adapter
 from forum_memory.models.extraction import ExtractionRecord
@@ -220,26 +222,12 @@ def _create_record(
 def _execute_pipeline(session: Session, ctx: SourceContext, record: ExtractionRecord) -> list[UUID]:
     """Image enrich → Compress → extract → AUDN → persist."""
     llm = get_provider()
-    question, discussion = _enrich_images(llm, ctx.question, ctx.discussion)
+    question, discussion, image_keywords = _enrich_images(llm, ctx.question, ctx.discussion)
     compressed = maybe_compress(llm, ctx.title, question, discussion)
     facts = extract_facts(llm, ctx.title, question, compressed)
+    facts = _inject_image_keywords(facts, image_keywords)
 
-    memory_ids: list[UUID] = []
-    batch_created: list[dict] = []
-    action_counts: dict[str, int] = {}
-
-    for fact in facts:
-        mid, action = process_one_fact(session, llm, ctx, fact, batch_created)
-        action_counts[action] = action_counts.get(action, 0) + 1
-        if mid:
-            memory_ids.append(mid)
-            batch_created.append({
-                "id": str(mid),
-                "content": fact["content"],
-                "authority": ctx.authority.value,
-                "tags": fact.get("tags", []),
-                "knowledge_type": fact.get("knowledge_type"),
-            })
+    memory_ids, action_counts = _process_facts(session, llm, ctx, facts)
 
     logger.info(
         "AUDN summary for %s/%s: %d facts → %d memories, decisions: %s",
@@ -248,21 +236,55 @@ def _execute_pipeline(session: Session, ctx: SourceContext, record: ExtractionRe
     return memory_ids
 
 
-def _enrich_images(llm, question: str, discussion: str) -> tuple[str, str]:
-    """Replace markdown images with vision-LLM descriptions in question and discussion.
+def _enrich_images(llm, question: str, discussion: str) -> tuple[str, str, list[str]]:
+    """Replace markdown images with vision-LLM descriptions.
 
-    Only the enriched text is used here (search_terms are not needed during
-    extraction — the pipeline already has the full discussion context).
+    Returns (enriched_question, enriched_discussion, image_keywords)。
+    image_keywords 汇总帖子内所有图片的 VLM 关键词，用于追加到提取出的每条
+    fact 的 tags，提升图片相关记忆的召回率。
     """
+    keywords: list[str] = []
     if has_images(question):
-        question = enrich_with_image_descriptions(question, llm).enriched_text
+        result = enrich_with_image_descriptions(question, llm)
+        question = result.enriched_text
+        if result.search_terms:
+            keywords.append(result.search_terms)
     if has_images(discussion):
-        discussion = enrich_with_image_descriptions(discussion, llm).enriched_text
-    return question, discussion
+        result = enrich_with_image_descriptions(discussion, llm)
+        discussion = result.enriched_text
+        if result.search_terms:
+            keywords.append(result.search_terms)
+    return question, discussion, _split_keywords(keywords)
+
+
+def _split_keywords(raw_terms: list[str]) -> list[str]:
+    """Flatten VLM 返回的 '关键词1, 关键词2, ...' 字符串列表，去重/去空/截断。"""
+    seen: list[str] = []
+    for group in raw_terms:
+        for kw in group.split(","):
+            kw = kw.strip()
+            if kw and kw not in seen:
+                seen.append(kw)
+    return seen[:5]  # 最多 5 个，避免 tag 膨胀
+
+
+def _inject_image_keywords(facts: list[dict], image_keywords: list[str]) -> list[dict]:
+    """将图片关键词作为补充 tag 注入本帖所有 facts（去重）。"""
+    if not image_keywords:
+        return facts
+    for fact in facts:
+        existing = fact.get("tags") or []
+        merged = list(existing)
+        for kw in image_keywords:
+            if kw not in merged:
+                merged.append(kw)
+        fact["tags"] = merged[:8]  # 总 tag 数上限
+    return facts
 
 
 def maybe_compress(llm, title: str, question: str, discussion: str) -> str:
-    if len(discussion) < 3000:
+    threshold = get_settings().compress_threshold_chars
+    if len(discussion) < threshold:
         return discussion
     msgs = build_compress_messages(title, question, discussion)
     return llm.complete(msgs)
@@ -328,11 +350,76 @@ def stage_gate(llm, atoms: list[dict]) -> list[dict]:
     return facts
 
 
-def process_one_fact(
-    session, llm, ctx: SourceContext, fact: dict,
-    batch_created: list[dict] | None = None,
-) -> tuple[UUID | None, str]:
-    """Run AUDN for a single fact and persist the result."""
+def _process_facts(
+    session: Session, llm, ctx: SourceContext, facts: list[dict],
+) -> tuple[list[UUID], dict[str, int]]:
+    """AUDN 批处理：按 audn_concurrency 分块，块内并行 LLM 决策、块间串行落库。
+
+    分块串行保留了 batch_created 的跨块可见性（后续块能看到前面块刚创建的记忆），
+    块内并行显著降低长帖的总提取时间。
+    """
+    memory_ids: list[UUID] = []
+    batch_created: list[dict] = []
+    action_counts: dict[str, int] = {}
+
+    chunk_size = max(1, get_settings().audn_concurrency)
+    for start in range(0, len(facts), chunk_size):
+        chunk = facts[start:start + chunk_size]
+        mids = _process_fact_chunk(session, llm, ctx, chunk, batch_created, action_counts)
+        memory_ids.extend(mids)
+    return memory_ids, action_counts
+
+
+def _process_fact_chunk(
+    session: Session, llm, ctx: SourceContext, chunk: list[dict],
+    batch_created: list[dict], action_counts: dict[str, int],
+) -> list[UUID]:
+    """处理一块 facts：串行 find_similar → 并行 LLM 决策 → 串行 apply。"""
+    # 1) 串行收集每条 fact 的 candidates（必须串行，find_similar 使用 session）
+    prepared = [_prepare_audn(session, ctx, fact, batch_created) for fact in chunk]
+
+    # 2) 块内并行 LLM 决策（I/O bound）
+    def _decide(prep: dict) -> str:
+        return llm.complete(prep["msgs"])
+
+    if len(prepared) == 1:
+        raws = [_decide(prepared[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
+            raws = list(pool.map(_decide, prepared))
+
+    # 3) 串行解析 + 重试 + 落库，沿用原有事务边界
+    created: list[UUID] = []
+    for prep, raw in zip(prepared, raws):
+        fact = prep["fact"]
+        result = parse_audn_response(raw)
+        result = _retry_audn_if_needed(llm, prep["msgs"], result, ctx)
+        result = _validate_audn_target(result, prep["similar"], ctx)
+
+        logger.info(
+            "AUDN decision for source %s: action=%s target=%s reason=%s",
+            ctx.source_id, result.action.value, result.target_id, result.reason,
+        )
+
+        data = _build_memory_create(ctx, fact)
+        memory = apply_audn(session, data, result)
+        action_counts[result.action.value] = action_counts.get(result.action.value, 0) + 1
+        if memory:
+            created.append(memory.id)
+            batch_created.append({
+                "id": str(memory.id),
+                "content": fact["content"],
+                "authority": ctx.authority.value,
+                "tags": fact.get("tags", []),
+                "knowledge_type": fact.get("knowledge_type"),
+            })
+    return created
+
+
+def _prepare_audn(
+    session: Session, ctx: SourceContext, fact: dict, batch_created: list[dict],
+) -> dict:
+    """为单条 fact 准备 AUDN 输入：召回 + 合并 batch_created + 构建 LLM messages。"""
     similar = find_similar(
         session, ctx.namespace_id, fact["content"], top_k=15,
         tags=fact.get("tags"), knowledge_type=fact.get("knowledge_type"),
@@ -342,13 +429,24 @@ def process_one_fact(
         for bc in batch_created:
             if bc["id"] not in seen_ids:
                 similar.append(bc)
-
     msgs = build_audn_messages(fact["content"], similar)
-    raw = llm.complete(msgs)
-    result = parse_audn_response(raw)
+    return {"fact": fact, "similar": similar, "msgs": msgs}
 
-    result = _retry_audn_if_needed(llm, msgs, result, ctx)
-    result = _validate_audn_target(result, similar, ctx)
+
+def process_one_fact(
+    session, llm, ctx: SourceContext, fact: dict,
+    batch_created: list[dict] | None = None,
+) -> tuple[UUID | None, str]:
+    """Run AUDN for a single fact and persist the result.
+
+    保留此单条入口用于外部调用（如 re_extract 的局部重提取或测试），内部主流程
+    已切换为 _process_facts 的批处理版本。
+    """
+    prep = _prepare_audn(session, ctx, fact, batch_created or [])
+    raw = llm.complete(prep["msgs"])
+    result = parse_audn_response(raw)
+    result = _retry_audn_if_needed(llm, prep["msgs"], result, ctx)
+    result = _validate_audn_target(result, prep["similar"], ctx)
 
     logger.info(
         "AUDN decision for source %s: action=%s target=%s reason=%s",
@@ -388,14 +486,18 @@ def _validate_audn_target(result: AUDNResult, similar: list[dict], ctx: SourceCo
 def _build_memory_create(ctx: SourceContext, fact: dict) -> MemoryCreate:
     """Build a MemoryCreate from SourceContext and a fact dict.
 
-    Memories extracted from TIMEOUT-closed threads are auto-flagged for review
-    with pending_reason=TIMEOUT.
+    Pending 规则优先级：TIMEOUT > LOW_QUALITY > 来源默认。
+    - TIMEOUT 来源帖子的所有记忆自动入 pending（既有逻辑）
+    - fact.low_quality=True（Gate 未通过但置信度未低到丢弃）同样入 pending
     """
     pending = ctx.pending_human_confirm
     reason = None
     if ctx.resolved_type == ResolvedType.TIMEOUT.value:
         pending = True
         reason = PendingReason.TIMEOUT
+    elif fact.get("low_quality"):
+        pending = True
+        reason = PendingReason.LOW_QUALITY
     return MemoryCreate(
         namespace_id=ctx.namespace_id,
         content=fact["content"],

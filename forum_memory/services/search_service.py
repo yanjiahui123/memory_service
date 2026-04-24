@@ -68,16 +68,20 @@ def find_similar(
 
     # Try ES-based multi-dimensional recall
     try:
+        from forum_memory.config import get_settings
+        min_score = get_settings().audn_knn_min_score
+
         provider = get_provider()
         content_embedding = provider.embed(content)
 
-        # 1. KNN recall (primary)
+        # 1. KNN recall (primary) — 按 ES 分数阈值过滤低相似候选，减少 AUDN LLM 的误判与 token 消耗
         knn_hits = es_service.knn_search(
             namespace_id=namespace_id,
             query_embedding=content_embedding,
             limit=top_k,
             index_name=es_index,
         )
+        knn_hits = [h for h in knn_hits if h.get("score", 0) >= min_score]
         _add_memories([UUID(h["memory_id"]) for h in knn_hits])
 
         # 2. Same-tags recall (if tags provided)
