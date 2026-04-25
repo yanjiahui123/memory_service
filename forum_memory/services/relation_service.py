@@ -146,10 +146,6 @@ def list_pending_relations(
     return paginated, total
 
 
-# 向后兼容别名（保留旧名称引用）
-list_contradictions = list_pending_relations
-
-
 # ---------------------------------------------------------------------------
 # Delete
 # ---------------------------------------------------------------------------

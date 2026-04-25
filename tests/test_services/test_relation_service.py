@@ -7,7 +7,7 @@ from forum_memory.services.relation_service import (
     create_relation,
     delete_relation,
     expand_relations_for_memories,
-    list_contradictions,
+    list_pending_relations,
     list_relations,
 )
 
@@ -103,25 +103,44 @@ def test_expand_relations_no_relations(session, memory_factory):
 
 
 # ---------------------------------------------------------------------------
-# list_contradictions
+# list_pending_relations
 # ---------------------------------------------------------------------------
 
-def test_list_contradictions_only_contradicts(session, memory_factory):
+def test_list_pending_relations_default_covers_three_types(session, memory_factory):
+    """默认覆盖 CONTRADICTS / SUPPLEMENTS / SUPERSEDES 三类，排除 CAUSED_BY 等其他类型。"""
+    m1 = memory_factory()
+    m2 = memory_factory()
+    m3 = memory_factory()
+    m4 = memory_factory()
+    create_relation(session, m1.id, m2.id, RelationType.CONTRADICTS)
+    create_relation(session, m1.id, m3.id, RelationType.SUPPLEMENTS)
+    create_relation(session, m1.id, m4.id, RelationType.CAUSED_BY)  # 不属于 LOCKED 关联裁决
+    items, total = list_pending_relations(session)
+    assert total == 2
+    assert {it.relation_type for it in items} == {
+        RelationType.CONTRADICTS, RelationType.SUPPLEMENTS,
+    }
+
+
+def test_list_pending_relations_filter_by_type(session, memory_factory):
+    """显式传 relation_types 时按指定类型过滤。"""
     m1 = memory_factory()
     m2 = memory_factory()
     m3 = memory_factory()
     create_relation(session, m1.id, m2.id, RelationType.CONTRADICTS)
     create_relation(session, m1.id, m3.id, RelationType.SUPPLEMENTS)
-    items, total = list_contradictions(session)
+    items, total = list_pending_relations(
+        session, relation_types=[RelationType.CONTRADICTS],
+    )
     assert total == 1
     assert items[0].relation_type == RelationType.CONTRADICTS
 
 
-def test_list_contradictions_pagination(session, memory_factory):
+def test_list_pending_relations_pagination(session, memory_factory):
     pairs = [(memory_factory(), memory_factory()) for _ in range(3)]
     for src, tgt in pairs:
         create_relation(session, src.id, tgt.id, RelationType.CONTRADICTS)
-    items, total = list_contradictions(session, page=1, size=2)
+    items, total = list_pending_relations(session, page=1, size=2)
     assert total == 3
     assert len(items) == 2
 
