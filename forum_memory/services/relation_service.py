@@ -94,15 +94,25 @@ def expand_relations_for_memories(
     return result
 
 
-def list_contradictions(
+# LOCKED 关联裁决涉及的三类关系（AUDN 自动产出，需要管理员介入）
+LOCKED_PENDING_RELATION_TYPES: tuple[RelationType, ...] = (
+    RelationType.CONTRADICTS,
+    RelationType.SUPPLEMENTS,
+    RelationType.SUPERSEDES,
+)
+
+
+def list_pending_relations(
     session: Session,
     namespace_id: UUID | None = None,
     page: int = 1,
     size: int = 20,
     namespace_ids: list[UUID] | None = None,
+    relation_types: list[RelationType] | None = None,
 ) -> tuple[list[MemoryRelation], int]:
-    """List CONTRADICTS relations, excluding pairs where either end is DELETED.
+    """List pending LOCKED-related relations, excluding pairs where either end is DELETED.
 
+    Defaults to all three LOCKED 关联裁决 types (CONTRADICTS / SUPPLEMENTS / SUPERSEDES).
     Optionally filtered by namespace(s) on the source memory.
     """
     from sqlmodel import func
@@ -110,12 +120,13 @@ def list_contradictions(
 
     src_mem = aliased(Memory)
     tgt_mem = aliased(Memory)
+    types = relation_types if relation_types else list(LOCKED_PENDING_RELATION_TYPES)
 
     def _apply_filters(stmt):
         stmt = (
             stmt.join(src_mem, MemoryRelation.source_memory_id == src_mem.id)
                 .join(tgt_mem, MemoryRelation.target_memory_id == tgt_mem.id)
-                .where(MemoryRelation.relation_type == RelationType.CONTRADICTS)
+                .where(MemoryRelation.relation_type.in_(types))
                 .where(src_mem.status != MemoryStatus.DELETED)
                 .where(tgt_mem.status != MemoryStatus.DELETED)
         )
@@ -133,6 +144,10 @@ def list_contradictions(
     )
     paginated = list(session.exec(page_stmt.offset((page - 1) * size).limit(size)).all())
     return paginated, total
+
+
+# 向后兼容别名（保留旧名称引用）
+list_contradictions = list_pending_relations
 
 
 # ---------------------------------------------------------------------------
@@ -159,12 +174,15 @@ def resolve_contradiction(
     reason: str,
     operator_id: UUID | None = None,
 ) -> tuple[bool, str]:
-    """Resolve a CONTRADICTS relation. Returns (success, detail_message)."""
+    """Resolve a LOCKED-related relation (CONTRADICTS / SUPPLEMENTS / SUPERSEDES).
+
+    Returns (success, detail_message).
+    """
     rel = session.get(MemoryRelation, relation_id)
     if not rel:
         return False, "关系不存在"
-    if rel.relation_type != RelationType.CONTRADICTS:
-        return False, "该关系不是 CONTRADICTS 类型"
+    if rel.relation_type not in LOCKED_PENDING_RELATION_TYPES:
+        return False, f"该关系类型 {rel.relation_type} 不支持人工裁决"
 
     if action == "keep_source":
         detail = _resolve_keep_source(session, rel, reason, operator_id)

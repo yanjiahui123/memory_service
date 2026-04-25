@@ -469,15 +469,24 @@ def list_contradictions(
     namespace_id: UUID | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
+    relation_types: str | None = Query(
+        None,
+        description="逗号分隔的关系类型，默认 CONTRADICTS,SUPPLEMENTS,SUPERSEDES",
+    ),
     session: Session = Depends(get_db),
     user: User = Depends(require_any_admin),
 ):
-    """List all CONTRADICTS memory pairs for admin review."""
+    """List LOCKED-related memory relation pairs for admin review.
+
+    Covers CONTRADICTS / SUPPLEMENTS / SUPERSEDES by default; use `relation_types`
+    to narrow to a single type.
+    """
     if namespace_id:
         check_board_permission(namespace_id, session, user)
 
     from forum_memory.services import relation_service
     from forum_memory.schemas.relation import RelationRead
+    from forum_memory.models.enums import RelationType
 
     ns_ids = None
     if not namespace_id and user.role == SystemRole.BOARD_ADMIN:
@@ -485,8 +494,22 @@ def list_contradictions(
         if not ns_ids:
             return {"items": [], "total": 0}
 
-    items, total = relation_service.list_contradictions(
-        session, namespace_id, page, size, namespace_ids=ns_ids,
+    parsed_types: list[RelationType] | None = None
+    if relation_types:
+        parsed_types = []
+        for raw in relation_types.split(","):
+            name = raw.strip()
+            if not name:
+                continue
+            try:
+                parsed_types.append(RelationType(name))
+            except ValueError as e:
+                raise HTTPException(400, f"未知关系类型: {name}") from e
+
+    items, total = relation_service.list_pending_relations(
+        session, namespace_id, page, size,
+        namespace_ids=ns_ids,
+        relation_types=parsed_types,
     )
     return {"items": [RelationRead.model_validate(r) for r in items], "total": total}
 
