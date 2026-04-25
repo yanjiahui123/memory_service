@@ -74,6 +74,7 @@ class MemoryFilter(BaseModel):
     status: str | None = None
     pending_confirm: bool | None = None
     pending_review: bool | None = None
+    pending_reason: str | None = None  # 单值或逗号分隔多值（如 "AUDN_CONFLICT,AUDN_SUPPLEMENT_LOCKED"）
     knowledge_type: str | None = None
     tags: str | None = None
     q: str | None = None

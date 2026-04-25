@@ -328,12 +328,13 @@ def _apply_update(session: Session, result: AUDNResult,
         return None
     if memory.authority == Authority.LOCKED:
         # LOCKED memory cannot be updated; create new fact as independent entry
-        # flagged for human review instead of silently dropping it
+        # flagged for human review instead of silently dropping it.
+        # Semantic: SUPPLEMENTS (new fact enhances existing LOCKED memory, not contradicts).
         if new_fact:
             new_fact.pending_human_confirm = True
-            new_fact.pending_reason = PendingReason.AUDN_CONFLICT
+            new_fact.pending_reason = PendingReason.AUDN_SUPPLEMENT_LOCKED
             logger.warning(
-                "AUDN wanted to UPDATE LOCKED memory %s — creating new fact for human review. Reason: %s",
+                "AUDN wanted to UPDATE LOCKED memory %s — creating new fact as SUPPLEMENT for human review. Reason: %s",
                 result.target_id, result.reason,
             )
             return create_memory(session, new_fact)
@@ -369,9 +370,10 @@ def _apply_delete(session: Session, result: AUDNResult) -> None:
         return
     if memory.authority == Authority.LOCKED:
         # Cannot delete LOCKED memory; flag it for human review
-        # (the caller will still create the new fact, which may contradict this one)
+        # (the caller will still create the new fact, which may supersede this one).
+        # Semantic: AUDN_DELETE_LOCKED (existing LOCKED memory may be superseded by a new fact).
         memory.pending_human_confirm = True
-        memory.pending_reason = PendingReason.AUDN_CONFLICT
+        memory.pending_reason = PendingReason.AUDN_DELETE_LOCKED
         _add_log(session, memory, OperationType.UPDATE,
                  reason=f"AUDN wanted DELETE but memory is LOCKED: {result.reason}")
         session.commit()
@@ -671,6 +673,12 @@ def _apply_filters(stmt, filters: MemoryFilter):
         stmt = _apply_pending_review(stmt)
     elif filters.pending_confirm:
         stmt = stmt.where(Memory.pending_human_confirm.is_(True))
+    if filters.pending_reason:
+        reasons = [r.strip() for r in filters.pending_reason.split(",") if r.strip()]
+        if len(reasons) == 1:
+            stmt = stmt.where(Memory.pending_reason == reasons[0])
+        elif reasons:
+            stmt = stmt.where(Memory.pending_reason.in_(reasons))
     if filters.knowledge_type:
         stmt = stmt.where(Memory.knowledge_type == filters.knowledge_type)
     if filters.tags:

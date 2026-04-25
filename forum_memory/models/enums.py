@@ -44,14 +44,26 @@ class AUDNAction(str, Enum):
 class PendingReason(str, Enum):
     """Why a memory was flagged pending_human_confirm.
 
-    None (NULL) = legacy or unspecified. Used to classify /quality-alerts and
-    to let /contradictions own AUDN_CONFLICT exclusively (no double counting).
+    None (NULL) = legacy or unspecified. Each reason should map to a dedicated
+    待处理中心 tab（互斥分类，避免多 tab 重复展示）。
     """
-    AUDN_CONFLICT = "AUDN_CONFLICT"        # AUDN 与 LOCKED 记忆冲突（附带 CONTRADICTS 关系）
+    # AUDN 类（新记忆需要人工审批是否入库）
+    AUDN_CONFLICT = "AUDN_CONFLICT"                       # ADD + conflict_with_locked（与 LOCKED 记忆矛盾，附带 CONTRADICTS 关系）
+    AUDN_SUPPLEMENT_LOCKED = "AUDN_SUPPLEMENT_LOCKED"     # UPDATE 目标为 LOCKED（新事实作为独立补充记忆入库，附带 SUPPLEMENTS 关系）
+    AUDN_DELETE_LOCKED = "AUDN_DELETE_LOCKED"             # DELETE 目标为 LOCKED（原 LOCKED 记忆被 flag，新事实另行入库 + SUPERSEDES 关系）
+    # 其他类
     WRONG_FEEDBACK = "WRONG_FEEDBACK"      # wrong_count 超阈值
     ADMIN_DELETE = "ADMIN_DELETE"          # 管理员删除帖子，关联记忆待复核
     TIMEOUT = "TIMEOUT"                    # 帖子超时关闭，记忆待人工评估
     LOW_QUALITY = "LOW_QUALITY"            # 质量门控未通过但置信度未低到丢弃（低质量原子，需人工评估）
+
+
+# 集合：AUDN 三类（前端"AUDN 审批" tab 使用）
+AUDN_PENDING_REASONS: set[str] = {
+    PendingReason.AUDN_CONFLICT.value,
+    PendingReason.AUDN_SUPPLEMENT_LOCKED.value,
+    PendingReason.AUDN_DELETE_LOCKED.value,
+}
 
 
 # ── User / Role enums ────────────────────────────────────────

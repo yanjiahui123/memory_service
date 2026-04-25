@@ -19,7 +19,9 @@ from forum_memory.api.deps import (
     check_board_permission, get_current_user, get_db, get_managed_namespace_ids,
     require_admin, require_any_admin,
 )
-from forum_memory.models.enums import SystemRole, Authority, MemoryStatus, PendingReason
+from forum_memory.models.enums import (
+    SystemRole, Authority, MemoryStatus, PendingReason, AUDN_PENDING_REASONS,
+)
 from forum_memory.models.memory import Memory
 from forum_memory.models.namespace import Namespace
 from forum_memory.models.operation_log import OperationLog
@@ -339,7 +341,7 @@ def list_quality_alerts(
     namespace_id: UUID | None = Query(None),
     reason: str | None = Query(
         None,
-        description="可选：按 pending_reason 过滤（WRONG_FEEDBACK / ADMIN_DELETE / TIMEOUT）。留空返回所有非矛盾类告警。",
+        description="可选：按 pending_reason 过滤（WRONG_FEEDBACK / ADMIN_DELETE）。留空默认只返回质量告警类（WRONG_FEEDBACK / ADMIN_DELETE + 历史 NULL），AUDN_*、TIMEOUT、LOW_QUALITY 由前端独立 tab 展示。",
     ),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
@@ -348,8 +350,9 @@ def list_quality_alerts(
 ) -> QualityAlertList:
     """返回 pending_human_confirm=True 的记忆（质量告警列表），按 wrong_count 降序。
 
-    默认排除 AUDN_CONFLICT（由 /contradictions 接口负责展示，避免重复计数）。
-    可按板块、pending_reason 过滤。超级管理员或板块管理员均可访问。
+    默认只保留质量告警类（WRONG_FEEDBACK / ADMIN_DELETE + 历史 NULL）。AUDN_*、TIMEOUT、
+    LOW_QUALITY 已在待处理中心有独立 tab，不在本接口重复展示。可按板块、pending_reason 过滤。
+    超级管理员或板块管理员均可访问。
     """
     if namespace_id:
         check_board_permission(namespace_id, session, user)
@@ -363,10 +366,14 @@ def list_quality_alerts(
     if reason:
         base_where = base_where & (Memory.pending_reason == reason)
     else:
-        # 默认排除 AUDN_CONFLICT（已在 /contradictions 展示），
+        # 默认排除 AUDN_*、TIMEOUT、LOW_QUALITY（前端各自独立 tab），
         # 允许 NULL（历史数据）保留在质量告警中。
+        excluded = AUDN_PENDING_REASONS | {
+            PendingReason.TIMEOUT.value,
+            PendingReason.LOW_QUALITY.value,
+        }
         base_where = base_where & (
-            (Memory.pending_reason != PendingReason.AUDN_CONFLICT)
+            Memory.pending_reason.notin_(excluded)
             | Memory.pending_reason.is_(None)
         )
 
