@@ -30,7 +30,6 @@ def _build_sort_clause(sort: str | None):
         return Thread.view_count.desc()
     if sort == "unanswered":
         return Thread.comment_count.asc()
-    # default: newest
     return Thread.created_at.desc()
 
 

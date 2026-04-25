@@ -98,7 +98,11 @@ def query_rag(
     try:
         resp = requests.post(
             settings.rag_base_url,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-HW-ID": settings.app_id,
+                "X-HW-APPKEY": settings.app_key
+            },
             json={"kb_sn_list": kb_sn_list, "question": question, "uid": uid, "top_k": top_k},
             timeout=settings.rag_timeout,
             verify=False

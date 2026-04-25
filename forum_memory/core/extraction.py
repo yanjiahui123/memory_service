@@ -127,7 +127,7 @@ def parse_gated_facts(raw: str) -> list[dict]:
     try:
         items = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning("Failed to parse gated facts: %s", text[:200])
+        logger.exception("Failed to parse gated facts: %s", text[:200])
         return []
     if not isinstance(items, list):
         return []

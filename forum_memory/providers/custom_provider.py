@@ -20,7 +20,10 @@ class CustomProvider(LLMProvider):
         self.llm_url = settings.custom_llm_url
         self.embed_url = settings.custom_embed_url
         self.rerank_url = settings.custom_rerank_url
-        self.headers = {}
+        self.headers = {
+            "X-HW-ID": settings.app_id,
+            "X-HW-APPKEY": settings.app_key
+        }
         if settings.custom_api_key:
             self.headers["Authorization"] = f"Bearer {settings.custom_api_key}"
         self.llm_model = settings.custom_llm_model
@@ -94,7 +97,6 @@ class CustomProvider(LLMProvider):
             headers=self.headers,
             json={"model": self.vision_model, "messages": messages},
             verify=False,
-            timeout=self.timeout,
         )
         resp.raise_for_status()
         resp.encoding = "utf-8"

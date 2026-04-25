@@ -11,29 +11,11 @@ import logging
 import requests
 
 from forum_memory.config import get_settings
+from forum_memory.config_center import get_app_dynamic_token
 
 logger = logging.getLogger(__name__)
 
 _PAGE_SIZE = 100
-
-
-def _get_app_token() -> str:
-    """Get dynamic authorization token for external API calls."""
-    settings = get_settings()
-
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    body = {"appId": settings.app_id, "credential": base64.b64encode(settings.idata_app_token.encode("utf-8")).decode("utf-8")}
-    try:
-        resp = requests.post(settings.idata_app_token_url, headers=headers, json=body, verify=False)
-
-        if not resp.ok:
-            logger.warning("_get_app_token failed: %s", resp.reason)
-            return ""
-
-        return resp.json()["result"]
-    except Exception:
-        logger.exception("Get app dynamic token failed")
-        return ""
 
 
 def _build_dept_path(user_info: dict) -> str:
@@ -63,12 +45,12 @@ def lookup_user(account: str) -> dict | None:
     Returns standardized dict or None if not found.
     """
     settings = get_settings()
-    headers = {"Authorization": _get_app_token()}
-    params = {"Account": account, "lang": "zh"}
+    headers = {"Authorization": get_app_dynamic_token()}
+    params = {"w3Account": account, "lang": "zh"}
     try:
         resp = requests.get(
             settings.idata_user_info_url,
-            params=params, headers=headers, verify=False, timeout=10,
+            params=params, headers=headers, verify=False
         )
         if not resp.ok:
             logger.warning("lookup_user failed for %s: %s", account, resp.reason)
@@ -97,7 +79,7 @@ def list_dept_members(dept_code: str) -> list[dict]:
     Returns list of {w3account, name, dept_code}.
     """
     settings = get_settings()
-    headers = {"Content-Type": "application/json", "Authorization": _get_app_token()}
+    headers = {"Content-Type": "application/json", "Authorization": get_app_dynamic_token()}
     all_members: list[dict] = []
     page = 1
 
@@ -143,7 +125,7 @@ def search_users(keyword: str, page_size: int = 20) -> list[dict]:
     Returns list of dicts from the external search API.
     """
     settings = get_settings()
-    headers = {"Content-Type": "application/json", "Authorization": _get_app_token()}
+    headers = {"Content-Type": "application/json", "Authorization": get_app_dynamic_token()}
     params = {
         "lang": "zh",
         "searchValue": keyword,

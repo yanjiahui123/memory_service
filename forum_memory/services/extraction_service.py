@@ -8,7 +8,7 @@ The pipeline operates on SourceContext (title, question, discussion).
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import delete as sa_delete
@@ -151,7 +151,7 @@ def _cleanup_retryable_record(
     Returns None if no retryable record was found (first extraction).
     Retryable: FAILED, COMPLETED_EMPTY (under retry limit), stale IN_PROGRESS (>30 min).
     """
-    stale_cutoff = datetime.now() - timedelta(minutes=30)
+    stale_cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(minutes=30)
     retryable = (
         (ExtractionRecord.status == ExtractionStatus.FAILED) |
         (ExtractionRecord.status == ExtractionStatus.COMPLETED_EMPTY) |
