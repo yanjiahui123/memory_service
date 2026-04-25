@@ -48,29 +48,30 @@ def find_similar(
     """
     ns = session.get(Namespace, namespace_id)
     es_index = ns.es_index_name if ns else None
+
+    es_results = _find_similar_via_es(
+        session, namespace_id, es_index, content, top_k, tags, knowledge_type,
+    )
+    if es_results:
+        return es_results[:top_k]
+
+    return _find_similar_fallback(session, namespace_id, content, top_k)
+
+
+def _find_similar_via_es(
+    session: Session,
+    namespace_id: UUID,
+    es_index: str | None,
+    content: str,
+    top_k: int,
+    tags: list[str] | None,
+    knowledge_type: str | None,
+) -> list[dict]:
+    """ES 多维召回：KNN ∪ same-tags ∪ same-knowledge_type，去重后返回。"""
     seen_ids: set[str] = set()
     results: list[dict] = []
-
-    def _add_memories(memory_ids: list[UUID]) -> None:
-        """Fetch memories by IDs and add unseen ones to results."""
-        if not memory_ids:
-            return
-        new_ids = [mid for mid in memory_ids if str(mid) not in seen_ids]
-        if not new_ids:
-            return
-        stmt = select(Memory).where(Memory.id.in_(new_ids))
-        memories_map = {str(m.id): m for m in session.exec(stmt).all()}
-        for mid in new_ids:
-            m = memories_map.get(str(mid))
-            if m:
-                seen_ids.add(str(m.id))
-                results.append({"id": str(m.id), "content": m.content, "authority": m.authority})
-
-    # Try ES-based multi-dimensional recall
     try:
-        from forum_memory.config import get_settings
         min_score = get_settings().audn_knn_min_score
-
         provider = get_provider()
         content_embedding = provider.embed(content)
 
@@ -82,7 +83,7 @@ def find_similar(
             index_name=es_index,
         )
         knn_hits = [h for h in knn_hits if h.get("score", 0) >= min_score]
-        _add_memories([UUID(h["memory_id"]) for h in knn_hits])
+        _accumulate_memories(session, [UUID(h["memory_id"]) for h in knn_hits], seen_ids, results)
 
         # 2. Same-tags recall (if tags provided)
         if tags:
@@ -93,7 +94,7 @@ def find_similar(
                 limit=top_k,
                 index_name=es_index,
             )
-            _add_memories([UUID(h["memory_id"]) for h in tag_hits])
+            _accumulate_memories(session, [UUID(h["memory_id"]) for h in tag_hits], seen_ids, results)
 
         # 3. Same knowledge_type recall (if provided)
         if knowledge_type:
@@ -104,20 +105,49 @@ def find_similar(
                 limit=top_k,
                 index_name=es_index,
             )
-            _add_memories([UUID(h["memory_id"]) for h in kt_hits])
+            _accumulate_memories(session, [UUID(h["memory_id"]) for h in kt_hits], seen_ids, results)
 
-        if results:
-            return results[:top_k]
+        return results
     except Exception:
         logger.exception("ES find_similar failed, falling back to text overlap")
+        return []
 
+
+def _accumulate_memories(
+    session: Session,
+    memory_ids: list[UUID],
+    seen_ids: set[str],
+    results: list[dict],
+) -> None:
+    """按 ID 拉取 Memory，将未见过的写入 results（就地修改 seen_ids/results）。"""
+    if not memory_ids:
+        return
+    new_ids = [mid for mid in memory_ids if str(mid) not in seen_ids]
+    if not new_ids:
+        return
+    stmt = select(Memory).where(Memory.id.in_(new_ids))
+    memories_map = {str(m.id): m for m in session.exec(stmt).all()}
+    for mid in new_ids:
+        m = memories_map.get(str(mid))
+        if m:
+            seen_ids.add(str(m.id))
+            results.append({"id": str(m.id), "content": m.content, "authority": m.authority})
+
+
+def _find_similar_fallback(
+    session: Session,
+    namespace_id: UUID,
+    content: str,
+    top_k: int,
+) -> list[dict]:
+    """ES 不可用时回退：SQL 拉候选 + 文本重叠率过滤。"""
     stmt = (
         select(Memory)
         .where(Memory.namespace_id == namespace_id, Memory.status == MemoryStatus.ACTIVE)
         .limit(top_k * 10)
     )
     memories = list(session.exec(stmt).all())
-    results = []
+    results: list[dict] = []
     for m in memories:
         if _text_overlap(content, m.content) > 0.2:
             results.append({"id": str(m.id), "content": m.content, "authority": m.authority})
