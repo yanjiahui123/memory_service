@@ -64,8 +64,14 @@ def delete_relation(
     rel = session.get(MemoryRelation, relation_id)
     if not rel:
         raise HTTPException(404, "Relation not found")
+    # 优先用 source 的 namespace 校验；source 已硬删时退化用 target；都缺失则拒绝。
     source_mem = memory_service.get_memory(session, rel.source_memory_id)
+    target_mem = memory_service.get_memory(session, rel.target_memory_id)
     if source_mem:
         check_board_permission(source_mem.namespace_id, session, user)
+    elif target_mem:
+        check_board_permission(target_mem.namespace_id, session, user)
+    else:
+        raise HTTPException(403, "无法验证关系归属，关联可能已孤立")
     if not relation_service.delete_relation(session, relation_id):
         raise HTTPException(404, "Relation not found")

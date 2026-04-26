@@ -2,30 +2,35 @@
 
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+# 单条记忆字段上限（与 ES dense_vector / PG TEXT 的实用边界对齐）
+_CONTENT_MAX = 10_000
+_TAGS_MAX = 20
 
 
 class MemoryCreate(BaseModel):
     namespace_id: UUID
-    content: str
-    knowledge_type: str | None = None
-    tags: list[str] | None = None
-    environment: str | None = None
-    source_type: str = "manual"
+    content: str = Field(min_length=1, max_length=_CONTENT_MAX)
+    knowledge_type: str | None = Field(default=None, max_length=64)
+    tags: list[str] | None = Field(default=None, max_length=_TAGS_MAX)
+    environment: str | None = Field(default=None, max_length=64)
+    source_type: str = Field(default="manual", max_length=32)
     source_id: UUID | None = None
-    source_role: str | None = None
-    resolved_type: str | None = None
-    authority: str | None = None
+    source_role: str | None = Field(default=None, max_length=32)
+    resolved_type: str | None = Field(default=None, max_length=32)
+    authority: str | None = Field(default=None, max_length=32)
     pending_human_confirm: bool = False
-    pending_reason: str | None = None
+    pending_reason: str | None = Field(default=None, max_length=64)
     gate_confidence: float | None = None
 
 
 class MemoryUpdate(BaseModel):
-    content: str | None = None
-    knowledge_type: str | None = None
-    tags: list[str] | None = None
-    environment: str | None = None
+    content: str | None = Field(default=None, min_length=1, max_length=_CONTENT_MAX)
+    knowledge_type: str | None = Field(default=None, max_length=64)
+    tags: list[str] | None = Field(default=None, max_length=_TAGS_MAX)
+    environment: str | None = Field(default=None, max_length=64)
 
 
 class MemoryRead(BaseModel):
@@ -64,7 +69,7 @@ class AuthorityChange(BaseModel):
 
 
 class MemoryBatchRequest(BaseModel):
-    ids: list[UUID]
+    ids: list[UUID] = Field(min_length=1, max_length=200)
 
 
 class MemoryFilter(BaseModel):

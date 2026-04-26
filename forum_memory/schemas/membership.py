@@ -3,23 +3,27 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+# 单批操作的成员/用户数量上限，避免单请求触发 N×SQL
+_BATCH_MAX = 200
 
 
 # ── Member schemas ───────────────────────────────────────────
 
 class MemberAdd(BaseModel):
-    employee_id: str
+    employee_id: str = Field(min_length=1, max_length=64)
     role: str = "member"
 
 
 class MemberBatchAdd(BaseModel):
-    employee_ids: list[str]
+    employee_ids: list[str] = Field(min_length=1, max_length=_BATCH_MAX)
     role: str = "member"
 
 
 class MemberBatchByDept(BaseModel):
-    dept_code: str
+    dept_code: str = Field(min_length=1, max_length=64)
     role: str = "member"
 
 
@@ -34,7 +38,7 @@ class MemberRead(BaseModel):
 
 
 class MemberBatchDelete(BaseModel):
-    user_ids: list[UUID]
+    user_ids: list[UUID] = Field(min_length=1, max_length=_BATCH_MAX)
 
 
 class MemberRoleUpdate(BaseModel):

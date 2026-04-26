@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from forum_memory.api.deps import get_db, get_current_user, check_namespace_read_access, check_board_permission
 from forum_memory.api.rate_limit import limiter
@@ -39,21 +39,59 @@ def list_tags(
     namespace_id: UUID | None = None,
     min_count: int = Query(2, ge=1),
     session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    # 给定 namespace 时校验读权限；未给定时聚合所有板块的 tag
+    # 仅对登录用户开放，非 PRIVATE 板块的标签是公开元数据
+    if namespace_id is not None:
+        check_namespace_read_access(namespace_id, session, user)
     return memory_service.list_all_tags(session, namespace_id, min_count=min_count)
 
 
 @router.post("/batch", response_model=list[MemoryRead])
-def batch_get(data: MemoryBatchRequest, session: Session = Depends(get_db)):
-    return memory_service.batch_get_memories(session, data.ids)
+def batch_get(
+    data: MemoryBatchRequest,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量取记忆。按 namespace 聚合一次性校验，过滤掉无权限的条目。"""
+    memories = memory_service.batch_get_memories(session, data.ids)
+    return _filter_readable(memories, session, user)
 
 
 @router.get("/{memory_id}", response_model=MemoryRead)
-def get_memory(memory_id: UUID, session: Session = Depends(get_db)):
+def get_memory(
+    memory_id: UUID,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     memory = memory_service.get_memory(session, memory_id)
     if not memory:
         raise HTTPException(404, "Memory not found")
+    check_namespace_read_access(memory.namespace_id, session, user)
     return memory
+
+
+def _filter_readable(memories, session: Session, user: User):
+    """仅返回当前用户可读 namespace 的记忆。按 namespace 去重校验，避免 N 次权限查询。"""
+    from forum_memory.api.deps import _is_namespace_member  # 复用成员判定
+    from forum_memory.models.namespace import Namespace
+    from forum_memory.models.enums import AccessMode, SystemRole
+
+    if user.role == SystemRole.SUPER_ADMIN:
+        return memories
+    ns_ids = {m.namespace_id for m in memories}
+    if not ns_ids:
+        return memories
+    ns_rows = list(session.exec(
+        select(Namespace.id, Namespace.access_mode, Namespace.owner_id)
+        .where(Namespace.id.in_(ns_ids))
+    ).all())
+    readable: set[UUID] = set()
+    for nid, mode, owner in ns_rows:
+        if mode != AccessMode.PRIVATE or owner == user.id or _is_namespace_member(nid, session, user):
+            readable.add(nid)
+    return [m for m in memories if m.namespace_id in readable]
 
 
 @router.post("", response_model=MemoryRead, status_code=201)

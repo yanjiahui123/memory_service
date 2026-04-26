@@ -21,8 +21,10 @@ class Notification(UUIDMixin, TimestampMixin, table=True):
     notification_type: str = Field(max_length=50)
     # "comment_on_thread" | "reply_to_comment"
 
-    thread_id: UUID = Field(foreign_key="memo_threads.id")
-    comment_id: UUID | None = Field(default=None, foreign_key="memo_comments.id")
+    thread_id: UUID = Field(foreign_key="memo_threads.id", ondelete="CASCADE")
+    comment_id: UUID | None = Field(
+        default=None, foreign_key="memo_comments.id", ondelete="CASCADE",
+    )
 
     is_read: bool = Field(default=False, index=True)
     read_at: datetime | None = Field(default=None)

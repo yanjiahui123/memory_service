@@ -12,7 +12,7 @@ class Feedback(UUIDMixin, TimestampMixin, table=True):
     """User feedback on a memory."""
     __tablename__ = "memo_feedbacks"
 
-    memory_id: UUID = Field(foreign_key="memo_memories.id", index=True)
-    user_id: UUID | None = Field(default=None, foreign_key="memo_users.id")
+    memory_id: UUID = Field(foreign_key="memo_memories.id", index=True, ondelete="CASCADE")
+    user_id: UUID | None = Field(default=None, foreign_key="memo_users.id", ondelete="SET NULL")
     feedback_type: FeedbackType = Field(index=True)
     comment: str | None = Field(default=None, max_length=1000)
