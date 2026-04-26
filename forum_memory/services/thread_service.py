@@ -196,17 +196,25 @@ def resolve_thread(session: Session, thread_id: UUID, best_answer_id: UUID | Non
 
 
 def adopt_answer(session: Session, thread_id: UUID, best_answer_id: UUID) -> Thread:
-    """Mark best answer without closing the thread (thread stays OPEN)."""
-    thread = session.get(Thread, thread_id)
+    """Mark best answer without closing the thread (thread stays OPEN).
+
+    Uses SELECT ... FOR UPDATE on the Thread row to serialize concurrent
+    adoptions, preventing two comments both ending up with is_best_answer=True.
+    """
+    # Row-lock the thread to serialize concurrent adopt_answer calls.
+    thread = session.exec(
+        select(Thread).where(Thread.id == thread_id).with_for_update()
+    ).first()
     if not thread:
         raise ValueError("Thread not found")
-    # Clear old best_answer mark if switching to a different comment
-    if thread.best_answer_id and thread.best_answer_id != best_answer_id:
-        prev = session.get(Comment, thread.best_answer_id)
-        if prev:
-            prev.is_best_answer = False
+    # Atomically set is_best_answer for all comments in this thread:
+    # only the new best_answer_id is True, all others False.
+    session.exec(
+        sa_update(Comment)
+        .where(Comment.thread_id == thread_id)
+        .values(is_best_answer=(Comment.id == best_answer_id))
+    )
     thread.best_answer_id = best_answer_id
-    _mark_best_answer(session, best_answer_id)
     session.commit()
     session.refresh(thread)
     return thread
@@ -557,10 +565,13 @@ def _prepare_ai_context(session: Session, thread_id: UUID) -> tuple[list[dict], 
 
     Returns (messages, cited_ids, rag_context).
     Uses concise search_query for recall, rich llm_question for LLM prompt.
+    Refuses to generate if the thread is no longer OPEN (closed/deleted in flight).
     """
     thread = session.get(Thread, thread_id)
     if not thread:
         raise ValueError("Thread not found")
+    if thread.status != ThreadStatus.OPEN:
+        raise ValueError(f"Cannot generate AI answer for thread in {thread.status} state")
 
     search_query, llm_question = _build_search_and_llm_questions(thread.title, thread.content)
     namespace = session.get(Namespace, thread.namespace_id)

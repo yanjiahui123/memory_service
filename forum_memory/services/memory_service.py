@@ -154,7 +154,16 @@ def delete_memory(session: Session, memory_id: UUID) -> bool:
     memory.indexed_at = None
     _add_log(session, memory, OperationType.DELETE, reason="deleted")
     session.commit()
-    es_service.delete_memory_doc(memory_id, index_name=index_name)
+    # ES delete is best-effort: PG soft-delete is the source of truth.
+    # An orphaned ES doc is filtered out by status=ACTIVE in search;
+    # repair sensor only re-indexes ACTIVE rows so it won't resurrect this.
+    try:
+        es_service.delete_memory_doc(memory_id, index_name=index_name)
+    except Exception:
+        logger.warning(
+            "ES delete_memory_doc failed for memory %s — orphaned ES doc, "
+            "filtered by status at search time", memory_id, exc_info=True,
+        )
     return True
 
 
